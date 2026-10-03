@@ -29,6 +29,28 @@ const check = (label, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${label}${detail ? "  " + detail : ""}`);
 };
 
+// Reproduce exactly what `cordis-plugin-loader` does to a module before it
+// reaches `ctx.plugin()`, then assert the shape that survives. A default export
+// collapses the module namespace to the bare `apply` function and silently drops
+// `inject`, which is invisible to a test that calls `apply()` directly: the
+// provider registers fine and only fails at harness boot with
+// `cannot get property "llm" without inject`.
+const unwrapExports = (exports) => {
+  if (exports === null || exports === undefined) return exports;
+  exports = exports.default ?? exports;
+  if (!exports.__esModule) return exports;
+  return exports.default ?? exports;
+};
+const asLoaded = unwrapExports(minimax);
+check("no default export (loader would drop inject)",
+  minimax.default === undefined, `default=${typeof minimax.default}`);
+check("inject survives loader unwrapping",
+  Array.isArray(asLoaded.inject) && asLoaded.inject.includes("llm"),
+  `inject=${JSON.stringify(asLoaded.inject)}`);
+check("apply survives loader unwrapping", typeof asLoaded.apply === "function");
+check("Config survives loader unwrapping", typeof asLoaded.Config === "function");
+check("name survives loader unwrapping", asLoaded.name === "llm-minimax-coding-plan");
+
 check("provider route registered",
   ctx.llm.listProviders().map(p => p.id).includes("minimax-coding-plan"));
 check("account service provided", account !== undefined);

@@ -54,8 +54,7 @@ const PROVIDER = 'minimax-coding-plan'
  * @param ctx - context owning this plugin lifetime with the LLM registry injected.
  * @param config - parsed plugin configuration.
  */
-export function apply(ctx: Context, config: Config): void {
-  const region = config.region
+export function apply(ctx: Context, config: Config): void {  const region = config.region
   const endpoints = endpointsFor(region)
 
   const account = new MinimaxAccount(ctx, {
@@ -131,4 +130,12 @@ export function apply(ctx: Context, config: Config): void {
   })
 }
 
-export default apply
+// No `export default apply`. Cordis's plugin loader normalises module shapes
+// with `exports = exports.default ?? exports` before handing the plugin to
+// `ctx.plugin()`, and reads `inject` off whatever that yields. A default export
+// therefore replaces the module namespace with the bare `apply` function, whose
+// `inject` is `undefined` — the fiber stops waiting for `llm`, runs `apply`
+// immediately, and fails with `cannot get property "llm" without inject`.
+// Exporting `apply` and `inject` as named exports is what keeps the dependency
+// declaration attached. `@deepseek-ai/dsh-llm-deepseek-account`, the first-party
+// equivalent of this plugin, likewise has no default export.
