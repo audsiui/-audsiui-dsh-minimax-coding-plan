@@ -74,9 +74,27 @@ Then select the route in the model picker as `minimax-coding-plan/<model-id>`.
 The route stays hidden from discovery until a credential is stored, so an
 unsigned harness does not advertise models it cannot call.
 
-The first request before sign-in fails with `ACCOUNT_SIGN_IN_REQUIRED`. Drive
-`ctx.minimaxAccount.signIn()` once (see below), or call it from a tiny plugin
-placed after this one.
+The first request before sign-in fails with `ACCOUNT_SIGN_IN_REQUIRED`. Sign in
+once with the bundled script:
+
+```sh
+node signin.mjs            # cn region, opens a browser
+node signin.mjs en         # io region
+node signin.mjs cn --no-browser
+```
+
+It prints a verification URL and a user code, then polls until you approve.
+The grant lands in the same `credentialsPath` the plugin reads, and the
+provider refreshes it on its own from then on — no reinstall, no restart.
+
+`signin.mjs` is a thin driver, not a second implementation: it imports
+`requestDeviceAuthorization`, `pollDeviceToken` and `writeCredential` from the
+built artifact and calls them in the same order `MinimaxAccount.signIn()` does.
+It exists because nothing in the harness calls that method yet — a settings
+button needs a browser half-side (`./client` plus a `ctx.slots.register` entry),
+and the `clientBundle` tsdown preset that produces one is not published, so an
+out-of-repo package has to replicate that build. The service method is the
+supported seam if you want to drive it from your own plugin instead.
 
 Every field from the Messages protocol schema (`thinking`, `reasoningEffort`,
 `maxTokens`, `defaultContextWindow`, `streamIdleTimeoutMs`, `retryPolicy`, …) is

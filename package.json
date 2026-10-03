@@ -25,7 +25,8 @@
     "prepack": "tsdown",
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
-    "smoke": "tsx smoke.ts"
+    "smoke": "tsx smoke.ts",
+    "signin": "node signin.mjs"
   },
   "dsh": {
     "bundle": {
