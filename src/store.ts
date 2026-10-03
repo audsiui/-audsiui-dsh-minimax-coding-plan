@@ -65,7 +65,11 @@ export async function readCredential(path: string): Promise<StoredCredential | u
 
 /** Persist a grant, replacing any previous record atomically. */
 export async function writeCredential(path: string, grant: TokenGrant, region: string): Promise<void> {
-  const record: StoredCredential = {
+  // Keys whose value is `undefined` are dropped rather than written: a
+  // property set to `undefined` is not a value JSON can represent, and the
+  // credential store that reads this file back rejects such a record outright.
+  // `readCredential` treats a missing key as undefined, so nothing changes here.
+  const record: Record<string, unknown> = {
     schemaVersion: 1,
     clientId: OAUTH_CLIENT_ID,
     accessToken: grant.accessToken,
@@ -75,6 +79,9 @@ export async function writeCredential(path: string, grant: TokenGrant, region: s
     accountId: grant.accountId,
     subject: grant.subject,
     region,
+  }
+  for (const key of Object.keys(record)) {
+    if (record[key] === undefined) delete record[key]
   }
   await mkdir(dirname(path), { recursive: true })
   // Same-directory temp file then rename: a crash mid-write leaves the previous

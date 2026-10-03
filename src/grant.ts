@@ -56,10 +56,33 @@ export function parseGrantPayload(payload: unknown): StoredCredential | undefine
   }
 }
 
+/**
+ * Drop every key whose value is `undefined`.
+ *
+ * The credential store validates a payload as *representable in JSON* before it
+ * writes one, and a property explicitly set to `undefined` fails that check even
+ * though `JSON.stringify` would have dropped it silently. Writing
+ * `accountId: undefined` therefore wedged the whole store: the record landed,
+ * and the next Host start refused to load with `record "…/default" payload
+ * holds a value JSON cannot represent` — a crash the plugin could not recover
+ * from, because it happens before any of this code runs.
+ *
+ * Omission is the encoding "absent" already uses everywhere else here, and
+ * `parseGrantPayload` reads a missing key as undefined, so nothing downstream
+ * has to know the difference.
+ */
+function withoutUndefined<T extends Record<string, unknown>>(record: T): T {
+  const kept: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(record)) {
+    if (value !== undefined) kept[key] = value
+  }
+  return kept as T
+}
+
 /** Build the payload a grant is stored as. */
 export function grantPayload(grant: TokenGrant, region: string): StoredCredential {
-  return {
-    schemaVersion: 1,
+  return withoutUndefined({
+    schemaVersion: 1 as const,
     clientId: OAUTH_CLIENT_ID,
     accessToken: grant.accessToken,
     refreshToken: grant.refreshToken,
@@ -68,7 +91,7 @@ export function grantPayload(grant: TokenGrant, region: string): StoredCredentia
     accountId: grant.accountId,
     subject: grant.subject,
     region,
-  }
+  })
 }
 
 /**

@@ -422,5 +422,30 @@ check("the loop picks the grant up after approval", settled.status === "authenti
 check("a token without a refresh token or echoed scope is still accepted", tokenCalls > 0, `${tokenCalls} poll(s)`);
 check("the stored record keeps the grant", (await deviceAccount.resolveToken(minimax.REGION_ENDPOINTS.cn.quotaOrigin)) === "at-1");
 
+// The payload has to be storable, not merely correct. The credential store
+// validates a payload as representable in JSON and refuses the whole file
+// otherwise, which is fatal at Host start — before any of this code can run, so
+// a plugin that wrote one such record could not even recover. A property set to
+// `undefined` is the specific offender: `JSON.stringify` drops it, the validator
+// does not forgive it.
+const undefinedFree = (value) => Object.entries(value).every(([, member]) => member !== undefined);
+const bareGrant = {
+  accessToken: "at-2", refreshToken: undefined, expiresAtMs: 1,
+  scopes: ["agent.default"], accountId: undefined, subject: undefined,
+};
+const payload = minimax.grantPayload(bareGrant, "cn");
+check("the credential payload holds no undefined value", undefinedFree(payload),
+  Object.entries(payload).filter(([, m]) => m === undefined).map(([k]) => k).join(", "));
+check("an absent field is omitted, not written as undefined",
+  !("accountId" in payload) && !("subject" in payload) && !("refreshToken" in payload));
+check("the payload survives a JSON round trip unchanged",
+  JSON.stringify(JSON.parse(JSON.stringify(payload))) === JSON.stringify(payload));
+check("the payload reads back as a usable grant",
+  minimax.parseGrantPayload(JSON.parse(JSON.stringify(payload)))?.accessToken === "at-2");
+const fullGrant = { ...bareGrant, refreshToken: "rt", accountId: "acct-1", subject: "sub-1" };
+const fullPayload = minimax.grantPayload(fullGrant, "cn");
+check("a fully populated grant keeps every field",
+  fullPayload.refreshToken === "rt" && fullPayload.accountId === "acct-1" && fullPayload.subject === "sub-1");
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
