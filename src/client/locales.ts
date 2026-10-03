@@ -19,16 +19,14 @@ export const zh = {
   'retry': '重试',
   'usage.interval': '本周期',
   'usage.weekly': '本周',
-  'usage.unlimited': '不限量',
   'usage.unmetered': '当前套餐未计量该窗口',
   'usage.used': '已用',
-  'usage.left': '剩余',
+  'usage.remains': '剩余时间',
   'usage.resets': '重置时间',
   'usage.signedOutHint': '登录后显示套餐用量',
   'usage.authExpired': '登录状态已失效，请重新登录',
   'usage.missing': '暂无用量数据',
   'usage.section': 'MiniMax 用量',
-  'usage.plan': '套餐：',
 } as const
 
 export type MinimaxLocaleKey = keyof typeof zh
@@ -54,14 +52,12 @@ export const en: Record<MinimaxLocaleKey, string> = {
   'retry': 'Retry',
   'usage.interval': 'This window',
   'usage.weekly': 'This week',
-  'usage.unlimited': 'Unlimited',
   'usage.unmetered': 'This plan does not meter that window',
   'usage.used': 'Used',
-  'usage.left': 'Left',
+  'usage.remains': 'Left',
   'usage.resets': 'Resets',
   'usage.signedOutHint': 'Sign in to see plan usage',
   'usage.authExpired': 'The grant was rejected; sign in again',
   'usage.missing': 'No usage data',
   'usage.section': 'MiniMax usage',
-  'usage.plan': 'Plan:',
 }

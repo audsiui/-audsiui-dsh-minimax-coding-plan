@@ -195,10 +195,6 @@
   transition: width var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
-.fillUnlimited {
-  background: var(--dsw-alias-bg-module-platform);
-}
-
 .meterFoot {
   display: flex;
   align-items: baseline;

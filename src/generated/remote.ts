@@ -4,15 +4,15 @@ import { z } from 'zod'
 let _audsiui_dsh_minimax_coding_plan_minimax_quota_result$schema$value
 const _audsiui_dsh_minimax_coding_plan_minimax_quota_result$schema = () => (_audsiui_dsh_minimax_coding_plan_minimax_quota_result$schema$value ??= z.object({
   'windows': z.array(z.object({
-  'id': z.string().readonly(),
-  'label': z.string().readonly(),
+  'model': z.string().readonly(),
+  'window': z.union([z.literal("interval"), z.literal("weekly")]).readonly(),
   'totalPercent': z.number().readonly(),
   'usedPercent': z.number().readonly(),
   'resetAtMs': z.union([z.literal(null), z.number()]).readonly(),
-  'unlimited': z.boolean().readonly(),
-  'present': z.boolean().readonly(),
+  'remainsMs': z.union([z.literal(null), z.number()]).readonly(),
+  'metered': z.boolean().readonly(),
+  'status': z.union([z.literal(null), z.number()]).readonly(),
 })).readonly(),
-  'planLabel': z.union([z.literal(null), z.string()]).readonly(),
   'fetchedAtMs': z.number().readonly(),
   'authExpired': z.boolean().readonly(),
   'error': z.union([z.literal(null), z.string()]).readonly(),
@@ -64,7 +64,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@audsiui/dsh-minimax-coding-plan/types#RemoteQuotaView',
         create: _audsiui_dsh_minimax_coding_plan_minimax_quota_result$schema,
       },
-      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":191,"column":9},
+      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":192,"column":9},
     },
     {
       id: '@audsiui/dsh-minimax-coding-plan#minimax/signIn',
@@ -79,7 +79,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@audsiui/dsh-minimax-coding-plan/types#RemoteAccountView',
         create: _audsiui_dsh_minimax_coding_plan_minimax_signIn_result$schema,
       },
-      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":155,"column":9},
+      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":156,"column":9},
     },
     {
       id: '@audsiui/dsh-minimax-coding-plan#minimax/signOut',
@@ -94,7 +94,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@audsiui/dsh-minimax-coding-plan/types#RemoteAccountView',
         create: _audsiui_dsh_minimax_coding_plan_minimax_signOut_result$schema,
       },
-      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":175,"column":9},
+      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":176,"column":9},
     },
     {
       id: '@audsiui/dsh-minimax-coding-plan#minimax/state',
@@ -109,7 +109,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@audsiui/dsh-minimax-coding-plan/types#RemoteAccountView',
         create: _audsiui_dsh_minimax_coding_plan_minimax_state_result$schema,
       },
-      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":130,"column":3},
+      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":131,"column":3},
     },
   ],
 }

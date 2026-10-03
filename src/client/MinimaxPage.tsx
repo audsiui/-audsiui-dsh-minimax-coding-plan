@@ -12,7 +12,6 @@
  */
 import { Button, Pill, SegmentedControl, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ComposedProps } from '@deepseek-ai/dsh-client-ui-slots'
-import clsx from 'clsx'
 import { useState, type ReactElement } from 'react'
 import type { RemoteQuotaWindow } from '../types.ts'
 import type { MinimaxSurfaceApi } from './index.ts'
@@ -43,6 +42,22 @@ function stamp(ms: number | null | undefined): string {
   return new Date(ms).toLocaleString()
 }
 
+/**
+ * Format a remaining duration the way the service counts it: milliseconds.
+ * The service reports these as plain numbers (`remains_time`, `weekly_remains_time`),
+ * not as an instant, so there is nothing to convert against a clock.
+ * @param ms - duration in milliseconds.
+ * @returns a short human duration.
+ */
+function formatDuration(ms: number): string {
+  const minutes = Math.floor(ms / 60_000)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const restMinutes = minutes % 60
+  if (hours < 48) return restMinutes === 0 ? `${hours}h` : `${hours}h ${restMinutes}m`
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}
+
 /** Map the account status onto the dot's semantics. */
 function dotFor(status: string): 'done' | 'warning' | 'ongoing' | 'idle' {
   if (status === 'authenticated') return 'done'
@@ -50,21 +65,31 @@ function dotFor(status: string): 'done' | 'warning' | 'ongoing' | 'idle' {
   return 'idle'
 }
 
-/** Render one allowance window as a labelled bar. */
-function UsageBar(props: { window: RemoteQuotaWindow; label: string; t: PageProps['t'] }): ReactElement {
-  const { window: win, label, t } = props
-  if (!win.present) return <p className={styles.empty}>{t('usage.unmetered')}</p>
+/** Render one model's allowance window as a labelled bar. */
+function UsageBar(props: { win: RemoteQuotaWindow; label: string; t: PageProps['t'] }): ReactElement {
+  const { win, label, t } = props
+  if (!win.metered) {
+    return (
+      <div className={styles.meter}>
+        <div className={styles.meterHead}>
+          <span className={styles.meterLabel}>{win.model} · {label}</span>
+        </div>
+        <p className={styles.empty}>{t('usage.unmetered')}</p>
+      </div>
+    )
+  }
 
-  // Share of the window's own total, not of a nominal 100: a plan metered at a
-  // different allowance would otherwise render as always half spent.
+  // Share of the window's own total, not of a nominal 100: this plan's weekly
+  // window is metered at 150%, and a bar computed against 100 would show it
+  // permanently two-thirds spent.
   const total = win.totalPercent > 0 ? win.totalPercent : 100
-  const spent = win.unlimited ? 0 : Math.min(100, Math.round(win.usedPercent / total * 100))
+  const spent = Math.min(100, Math.max(0, Math.round(win.usedPercent / total * 100)))
 
   return (
     <div className={styles.meter}>
       <div className={styles.meterHead}>
-        <span className={styles.meterLabel}>{win.unlimited ? t('usage.unlimited') : label}</span>
-        {!win.unlimited && <span className={styles.meterValue}>{spent}%</span>}
+        <span className={styles.meterLabel}>{win.model} · {label}</span>
+        <span className={styles.meterValue}>{spent}%</span>
       </div>
       <div
         className={styles.track}
@@ -72,17 +97,13 @@ function UsageBar(props: { window: RemoteQuotaWindow; label: string; t: PageProp
         aria-valuenow={spent}
         aria-valuemin={0}
         aria-valuemax={100}
-        aria-label={label}
+        aria-label={`${win.model} ${label}`}
       >
-        <i
-          className={clsx(styles.fill, win.unlimited && styles.fillUnlimited)}
-          style={{ width: `${win.unlimited ? 100 : spent}%` }}
-        />
+        <i className={styles.fill} style={{ width: `${spent}%` }} />
       </div>
       <div className={styles.meterFoot}>
-        {win.unlimited
-          ? <span>{t('usage.unlimited')}</span>
-          : <span>{t('usage.used')} {spent}% · {t('usage.left')} {Math.max(0, 100 - spent)}%</span>}
+        <span>{t('usage.used')} {win.usedPercent}% / {win.totalPercent}%</span>
+        {win.remainsMs !== null && <span>{t('usage.remains')} {formatDuration(win.remainsMs)}</span>}
         {win.resetAtMs !== null && <span>{t('usage.resets')} {stamp(win.resetAtMs)}</span>}
       </div>
     </div>
@@ -110,12 +131,14 @@ export function MinimaxPage(props: PageProps): ReactElement {
   const status = state?.status ?? 'signed-out'
   const authorizing = status === 'authorizing'
   const authenticated = status === 'authenticated'
-  // Not named `window`: that would shadow the global the open call needs.
-  const activeWindow = quota?.windows.find(w => w.id === selected)
+  // The service meters each model family separately, so the chosen window is a
+  // filter rather than a single row: one bar per model that reports it.
   const options = [
     { value: 'interval' as const, label: t('usage.interval') },
     { value: 'weekly' as const, label: t('usage.weekly') },
   ]
+  const selectedLabel = options.find(option => option.value === selected)?.label ?? selected
+  const selectedWindows = (quota?.windows ?? []).filter(win => win.window === selected)
 
   return (
     <div className={styles.page} data-plugin="minimax-coding-plan">
@@ -191,11 +214,11 @@ export function MinimaxPage(props: PageProps): ReactElement {
             </p>
           : quota?.error != null
             ? <p className={styles.error}><StateDot state="error" size={8} /> {quota.error}</p>
-            : activeWindow === undefined
+            : selectedWindows.length === 0
               ? <p className={styles.empty}>{t('usage.missing')}</p>
-              : <UsageBar window={activeWindow} label={options.find(o => o.value === selected)?.label ?? selected} t={t} />}
-
-        {quota?.planLabel != null && <p className={styles.sub}>{t('usage.plan')} {quota.planLabel}</p>}
+              : selectedWindows.map(win => (
+                <UsageBar key={`${win.model}/${win.window}`} win={win} label={selectedLabel} t={t} />
+              ))}
       </section>
     </div>
   )

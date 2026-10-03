@@ -180,70 +180,127 @@ const quotaFor = (body, status = 200) => ({
   now: () => 1_700_000_000_000,
 });
 
-// The shape the service actually sends: percent values arrive as strings, and
-// a window the plan does not meter is absent rather than zero.
+// The shape the service actually sends, captured verbatim from a live
+// `remains_percent` read against a real grant. Nothing here is invented: the
+// earlier fixture put the windows at the top level, which is not where the
+// service puts them, and it had a single model where the service answers with
+// one entry per model family.
 const REAL_SHAPE = {
+  model_remains: [
+    {
+      model_name: "general",
+      start_time: 1790992800000,
+      end_time: 1791010800000,
+      remains_time: 2973467,
+      current_interval_total_count: -1,
+      current_interval_used_count: -1,
+      current_interval_remains_count: -1,
+      current_interval_used_percent: "0%",
+      current_interval_total_percent: "100%",
+      current_interval_status: 1,
+      weekly_start_time: 1790524800000,
+      weekly_end_time: 1791129600000,
+      weekly_remains_time: 121773467,
+      current_weekly_total_count: -1,
+      current_weekly_used_count: -1,
+      current_weekly_remains_count: -1,
+      current_weekly_used_percent: "6%",
+      // A total above 100. Clamping it would have rendered a 150% allowance
+      // as 100% — permanently two-thirds spent.
+      current_weekly_total_percent: "150%",
+      current_weekly_status: 1,
+    },
+    {
+      model_name: "video",
+      start_time: 1790956800000,
+      end_time: 1791043200000,
+      remains_time: 35373467,
+      current_interval_total_count: 3,
+      current_interval_used_count: 0,
+      current_interval_remains_count: 3,
+      current_interval_used_percent: "0%",
+      current_interval_total_percent: "100%",
+      current_interval_status: 1,
+      weekly_start_time: 1790524800000,
+      weekly_end_time: 1791129600000,
+      weekly_remains_time: 121773467,
+      // Real counts: this window is metered, unlike the `general` one above.
+      current_weekly_total_count: 21,
+      current_weekly_used_count: 0,
+      current_weekly_remains_count: 21,
+      current_weekly_used_percent: "0%",
+      current_weekly_total_percent: "100%",
+      current_weekly_status: 1,
+    },
+  ],
   base_resp: { status_code: 0, status_msg: "success" },
-  current_interval_total_percent: "100",
-  current_interval_used_percent: "37.5",
-  current_interval_status: 1,
-  end_time: 1_700_001_800,
-  current_weekly_total_percent: "100%",
-  current_weekly_used_percent: "12",
-  current_weekly_status: 1,
-  weekly_end_time: 1_700_600_000,
 };
 
 const parsed = await minimax.fetchQuota(quotaFor(REAL_SHAPE));
-const weekly = parsed.windows.find(w => w.id === "weekly");
-const interval = parsed.windows.find(w => w.id === "interval");
-check("weekly window parsed from the percent string", weekly.usedPercent === 12, `${weekly.usedPercent}`);
-check("interval window parsed from the percent string", interval.usedPercent === 38, `${interval.usedPercent}`);
-check("a trailing % is stripped", weekly.totalPercent === 100, `${weekly.totalPercent}`);
-check("a seconds-valued reset is lifted to millis", weekly.resetAtMs === 1_700_600_000_000, `${weekly.resetAtMs}`);
-check("a metered window is not unlimited", weekly.unlimited === false && interval.unlimited === false);
+const generalWeekly = parsed.windows.find(w => w.model === "general" && w.window === "weekly");
+const generalInterval = parsed.windows.find(w => w.model === "general" && w.window === "interval");
+const videoWeekly = parsed.windows.find(w => w.model === "video" && w.window === "weekly");
+check("the weekly window is parsed from the percent string", generalWeekly.usedPercent === 6, `${generalWeekly.usedPercent}`);
+check("the interval window is parsed from the percent string", generalInterval.usedPercent === 0, `${generalInterval.usedPercent}`);
+check("a total above 100 is not clamped", generalWeekly.totalPercent === 150, `${generalWeekly.totalPercent}`);
+check("a trailing % is stripped", generalInterval.totalPercent === 100, `${generalInterval.totalPercent}`);
+check("an epoch-ms reset passes through", generalWeekly.resetAtMs === 1791129600000, `${generalWeekly.resetAtMs}`);
+check("the interval reset comes from end_time", generalInterval.resetAtMs === 1791010800000, `${generalInterval.resetAtMs}`);
+check("the service's own remaining time is reported",
+  generalWeekly.remainsMs === 121773467 && generalInterval.remainsMs === 2973467,
+  `${generalWeekly.remainsMs} / ${generalInterval.remainsMs}`);
+check("the service's window status is carried verbatim", generalWeekly.status === 1, `${generalWeekly.status}`);
+check("counts of -1 read as an unmetered window", generalWeekly.metered === false, `${generalWeekly.metered}`);
+check("real counts read as a metered window", videoWeekly.metered === true, `${videoWeekly.metered}`);
+check("one entry per model family, two windows each", parsed.windows.length === 4, `${parsed.windows.length}`);
+check("the models are kept apart", new Set(parsed.windows.map(w => w.model)).size === 2);
 check("fetchedAt is the injected clock", parsed.fetchedAtMs === 1_700_000_000_000);
 
-// A status of 3 is the server's "not actually capped" marker.
-const unlimited = await minimax.fetchQuota(quotaFor({
+// A seconds-valued reset is still lifted, since the service is not consistent
+// about the unit and the older fixture proved the seconds form exists.
+const seconds = await minimax.fetchQuota(quotaFor({
+  model_remains: [{ model_name: "general", weekly_end_time: 1_700_600_000 }],
   base_resp: { status_code: 0 },
-  current_weekly_total_percent: "100", current_weekly_status: 3,
 }));
-check("status 3 reads as unlimited", unlimited.windows.find(w => w.id === "weekly").unlimited === true);
+check("a seconds-valued reset is lifted to millis",
+  seconds.windows.find(w => w.window === "weekly").resetAtMs === 1_700_600_000_000,
+  `${seconds.windows.find(w => w.window === "weekly").resetAtMs}`);
 
+// A body with no `model_remains` is a plan that meters nothing — not a shape
+// change to guess at, and not a window that reads as 0% used.
 const unmetered = await minimax.fetchQuota(quotaFor({ base_resp: { status_code: 0 } }));
-check("an absent window is reported absent, not as 0% used",
-  unmetered.windows.every(w => w.present === false && w.usedPercent === 0));
+check("a body with no model_remains reports no windows at all",
+  unmetered.windows.length === 0, `${unmetered.windows.length}`);
 
-// A used share that overshoots its own total must clamp, so the bar cannot
-// render wider than 100%.
-const overshoot = await minimax.fetchQuota(quotaFor({
+// An unrecognised model must still produce windows rather than being dropped.
+const unnamed = await minimax.fetchQuota(quotaFor({
+  model_remains: [{ current_weekly_total_percent: "100%", current_weekly_used_percent: "5%" }],
   base_resp: { status_code: 0 },
-  current_weekly_total_percent: "100", current_weekly_used_percent: "140",
 }));
-check("used share clamps to the window total",
-  overshoot.windows.find(w => w.id === "weekly").usedPercent === 100);
+check("an entry with no model_name is still reported",
+  unnamed.windows.length === 2 && unnamed.windows.every(w => w.model === "unknown"),
+  unnamed.windows.map(w => w.model).join(","));
 
-let authError;
-try { await minimax.fetchQuota(quotaFor({ base_resp: { status_code: 1004, status_msg: "not login" } }, 401)); }
-catch (e) { authError = e; }
-check("a rejected grant raises QuotaAuthError", authError instanceof minimax.QuotaAuthError,
-  `${authError?.name} ${authError?.statusCode ?? ""}`);
-
-// 1016 is what the live service answers for a credential that is present but
-// invalid; treating it as a transient failure would strand the operator on a
-// console that never offers sign-in again.
+// 1016 is the only auth code that has been observed, and the live endpoint
+// answers it for a missing credential and a rejected one alike — probed with no
+// header, an empty header, and two garbage bearers. An earlier version also
+// treated 1004 as the "no credential" code; there is no such distinction.
 let staleError;
 try { await minimax.fetchQuota(quotaFor({ base_resp: { status_code: 1016, status_msg: "invalid api key" } })); }
 catch (e) { staleError = e; }
-check("a present-but-invalid grant also raises QuotaAuthError",
+check("a rejected grant raises QuotaAuthError",
   staleError instanceof minimax.QuotaAuthError, `${staleError?.name} ${staleError?.statusCode ?? ""}`);
+check("the message carries the service's own code and wording",
+  staleError?.message.includes("1016") && staleError.message.includes("invalid api key"),
+  staleError?.message);
 
 let bizError;
 try { await minimax.fetchQuota(quotaFor({ base_resp: { status_code: 1003, status_msg: "group-not-member" } }, 401)); }
 catch (e) { bizError = e; }
 check("a non-auth business code is not mistaken for an expired grant",
   !(bizError instanceof minimax.QuotaAuthError) && bizError instanceof minimax.QuotaNetworkError, bizError?.name);
+check("an unrecognised code still reports what the server said",
+  bizError?.message.includes("1003") && bizError.message.includes("group-not-member"), bizError?.message);
 
 let nonJson;
 try {
@@ -252,14 +309,25 @@ try {
 check("an HTML body is a network error, not a silent empty quota",
   nonJson instanceof minimax.QuotaNetworkError, nonJson?.message);
 
-// The token must travel as the bare `token` header: a bearer header alone is
-// answered with 1004 even when the grant is valid.
-let seenHeader;
+// The grant travels as `Authorization: Bearer`. This was wrong once: an earlier
+// version sent a bare `token` header, on the strength of a note claiming the
+// service checks that one instead. Verified against the live endpoint with a
+// real grant — the bare header answers `1016 invalid api key`, the identical
+// token answers `status_code: 0` under the bearer header. Pinned here so the
+// regression cannot come back quietly.
+let seenAuthorization;
+let seenBareToken;
 await minimax.fetchQuota({
   ...quotaFor({ base_resp: { status_code: 0 } }),
-  fetchImpl: async (_url, init) => { seenHeader = new Headers(init.headers).get("token"); return jsonResponse({ base_resp: { status_code: 0 } }); },
+  fetchImpl: async (_url, init) => {
+    const headers = new Headers(init.headers);
+    seenAuthorization = headers.get("authorization");
+    seenBareToken = headers.get("token");
+    return jsonResponse({ base_resp: { status_code: 0 } });
+  },
 });
-check("the grant is sent as a bare `token` header", seenHeader === "quota-token", `${seenHeader}`);
+check("the grant is sent as Authorization: Bearer", seenAuthorization === "Bearer quota-token", `${seenAuthorization}`);
+check("the grant is not sent as a bare token header", seenBareToken === null, `${seenBareToken}`);
 
 // The Remote service: the browser half's only route to this process.
 //
@@ -305,7 +373,14 @@ const remoteService = new minimax.MinimaxRemoteService(remoteCtx, {
   account: remoteAccount,
   endpoints: minimax.REGION_ENDPOINTS.cn,
   region: "cn",
-  fetchImpl: async () => jsonResponse({ base_resp: { status_code: 0 }, current_weekly_total_percent: "100", current_weekly_used_percent: "12" }),
+  fetchImpl: async () => jsonResponse({
+    model_remains: [{
+      model_name: "general",
+      current_weekly_total_percent: "100%", current_weekly_used_percent: "12%",
+      current_weekly_total_count: 10, current_weekly_used_count: 1, current_weekly_status: 1,
+    }],
+    base_resp: { status_code: 0 },
+  }),
 });
 check("Remote service binds its namespace", remoteService.typertRemote?.namespace === "minimax",
   remoteService.typertRemote?.namespace);
@@ -336,8 +411,9 @@ check("authenticated state carries the account id", authed.accountId === "acct-r
 check("authenticated state drops the device code", authed.userCode === null);
 
 const grant = await remoteService.quota();
-check("quota reads through the Remote", grant.windows.find(w => w.id === "weekly")?.usedPercent === 12,
-  JSON.stringify(grant.windows.map(w => [w.id, w.usedPercent])));
+const remoteWeekly = grant.windows.find(w => w.model === "general" && w.window === "weekly");
+check("quota reads through the Remote", remoteWeekly?.usedPercent === 12, JSON.stringify(grant.windows));
+check("the Remote keeps the model identity on the wire", remoteWeekly?.model === "general", remoteWeekly?.model);
 check("quota never returns the grant", !JSON.stringify(grant).includes("remote-grant"));
 check("a successful quota read is not flagged auth-expired", grant.authExpired === false && grant.error === null);
 

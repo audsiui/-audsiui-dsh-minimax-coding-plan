@@ -19,16 +19,14 @@ export declare const zh: {
     readonly retry: "重试";
     readonly 'usage.interval': "本周期";
     readonly 'usage.weekly': "本周";
-    readonly 'usage.unlimited': "不限量";
     readonly 'usage.unmetered': "当前套餐未计量该窗口";
     readonly 'usage.used': "已用";
-    readonly 'usage.left': "剩余";
+    readonly 'usage.remains': "剩余时间";
     readonly 'usage.resets': "重置时间";
     readonly 'usage.signedOutHint': "登录后显示套餐用量";
     readonly 'usage.authExpired': "登录状态已失效，请重新登录";
     readonly 'usage.missing': "暂无用量数据";
     readonly 'usage.section': "MiniMax 用量";
-    readonly 'usage.plan': "套餐：";
 };
 export type MinimaxLocaleKey = keyof typeof zh;
 /** English mirror; the key set is the contract, not the wording. */

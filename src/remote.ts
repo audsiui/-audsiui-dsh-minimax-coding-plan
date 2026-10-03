@@ -86,19 +86,20 @@ function toAccountView(state: MinimaxAccountState, region: string): RemoteAccoun
 /** Project one allowance window onto the wire record. */
 function toWindow(window: QuotaWindow): RemoteQuotaWindow {
   return {
-    id: window.id,
-    label: window.label,
+    model: window.model,
+    window: window.window,
     totalPercent: window.totalPercent,
     usedPercent: window.usedPercent,
     resetAtMs: window.resetAtMs ?? null,
-    unlimited: window.unlimited,
-    present: window.present,
+    remainsMs: window.remainsMs ?? null,
+    metered: window.metered,
+    status: window.status ?? null,
   }
 }
 
 /** A usage read that found no usable grant, with the reason already decided. */
 function unusableQuota(authExpired: boolean, error: string, now: number): RemoteQuotaView {
-  return { windows: [], planLabel: null, fetchedAtMs: now, authExpired, error }
+  return { windows: [], fetchedAtMs: now, authExpired, error }
 }
 
 /**
@@ -218,7 +219,6 @@ export class MinimaxRemoteService extends TypertRemoteService {
       })
       return {
         windows: snapshot.windows.map(toWindow),
-        planLabel: snapshot.planLabel ?? null,
         fetchedAtMs: snapshot.fetchedAtMs,
         authExpired: false,
         error: null,

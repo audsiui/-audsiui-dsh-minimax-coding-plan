@@ -28,28 +28,45 @@ export interface RemoteAccountView {
   readonly region: string
 }
 
-/** One metered allowance window. */
+/** Which allowance window a figure belongs to. */
+export type RemoteQuotaWindowId = 'interval' | 'weekly'
+
+/**
+ * One metered allowance window, for one model.
+ *
+ * The service groups its answer by model family — a real account reports
+ * `general` and `video` separately — so the model is part of the window's
+ * identity, not a decoration on it. There is no label: the surface owns the
+ * wording, and a Chinese string in the Host half has no locale to travel with.
+ */
 export interface RemoteQuotaWindow {
-  /** Stable window id: `interval` or `weekly`. */
-  readonly id: string
-  /** Human label for the surface. */
-  readonly label: string
-  /** Allowance as a percentage. */
+  /** `model_name` the service reported this window under. */
+  readonly model: string
+  /** Which window this figure is for. */
+  readonly window: RemoteQuotaWindowId
+  /**
+   * Allowance as a percentage, **not** bounded by 100 — a real weekly window
+   * reported `150%`. The rendered bar bounds the ratio, not this number.
+   */
   readonly totalPercent: number
   /** Consumed share of `totalPercent`. */
   readonly usedPercent: number
   /** Epoch milliseconds the window resets, when reported. */
   readonly resetAtMs: number | null
-  /** The plan does not actually cap this window. */
-  readonly unlimited: boolean
-  /** False when the response carried none of this window's fields. */
-  readonly present: boolean
+  /** Milliseconds left in the window, as the service counts them. */
+  readonly remainsMs: number | null
+  /**
+   * False when the service's counts were `-1`, its way of saying the plan does
+   * not meter this window. The percentages are still present and are advisory.
+   */
+  readonly metered: boolean
+  /** The service's own window status, verbatim. */
+  readonly status: number | null
 }
 
 /** The whole usage read, or why there is none. */
 export interface RemoteQuotaView {
   readonly windows: readonly RemoteQuotaWindow[]
-  readonly planLabel: string | null
   /** Epoch milliseconds the numbers were fetched at. */
   readonly fetchedAtMs: number
   /** Set when a grant was rejected, so the surface can offer sign-in again. */

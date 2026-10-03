@@ -2,15 +2,28 @@
  * Coding Plan quota reads.
  *
  * `remains_percent` is a plain authenticated GET on the open platform. It
- * carries no request signature: the header set is the access token plus JSON
- * content type, and every failure comes back inside `base_resp` rather than
- * as an HTTP error class. `1004` is the one that matters here — it means the
- * token is missing or stale, which is the signal to re-sign-in.
+ * carries no request signature, and every failure comes back inside `base_resp`
+ * rather than as an HTTP status class — a rejected credential still answers
+ * HTTP 200.
  *
- * The response describes exactly two allowance windows and no monthly one:
- * a short `interval` window and a `weekly` window. There is no third field to
- * read, so this module reports those two and leaves the absence alone rather
+ * The credential goes in `Authorization: Bearer <token>`. This was wrong once:
+ * an earlier version sent it as a bare `token` header, on the strength of a note
+ * claiming this service checks that one instead. Verified against the live
+ * endpoint with a real grant — a bare `token` header answers
+ * `1016 invalid api key`, and the identical token answers `status_code: 0`
+ * under the bearer header. Nothing else about the request differs.
+ *
+ * The body is `{ model_remains: [...], base_resp: {...} }`, one entry per model
+ * family the plan meters — a real account returns `general` and `video`. Each
+ * entry carries exactly two allowance windows and no monthly one: a short
+ * `interval` window and a `weekly` window. There is no third field to read, so
+ * this module reports those two per entry and leaves the absence alone rather
  * than inventing a monthly figure.
+ *
+ * Percentages arrive as strings with a trailing `%`. The *total* is a
+ * percentage too, and it is not bounded by 100 — a real weekly window reported
+ * `150%`. Clamping it would have turned a 150% allowance into a 100% one, so
+ * totals are passed through and only the rendered ratio is bounded.
  */
 import type { RegionEndpoints } from './constants.ts'
 
@@ -22,27 +35,31 @@ interface BaseResp {
 
 /** One allowance window, normalised away from the wire's percent strings. */
 export interface QuotaWindow {
-  /** Window identity, stable across responses. */
-  readonly id: 'interval' | 'weekly'
-  /** Human label for the console. */
-  readonly label: string
-  /** Allowance as a percentage; `100` when the server omits or zeroes it. */
+  /** `model_name` the server grouped this window under. */
+  readonly model: string
+  /** Which window: `interval` or `weekly`. */
+  readonly window: 'interval' | 'weekly'
+  /** Allowance as a percentage. Not bounded by 100; a 150% plan is real. */
   readonly totalPercent: number
   /** Consumed share of {@link totalPercent}, never negative. */
   readonly usedPercent: number
   /** Epoch milliseconds the window resets, when the server reports it. */
   readonly resetAtMs: number | undefined
-  /** The server marked this window unlimited; the percentages are advisory. */
-  readonly unlimited: boolean
-  /** False when the response carried none of this window's fields. */
-  readonly present: boolean
+  /** Milliseconds left in the window, as the server counts them. */
+  readonly remainsMs: number | undefined
+  /**
+   * False when the server's counts are `-1` for this window, which is how it
+   * says the plan does not meter it. Percentages are still present in that
+   * case and are reported as advisory.
+   */
+  readonly metered: boolean
+  /** The server's own window status, verbatim. */
+  readonly status: number | undefined
 }
 
 /** Everything the console renders for one account. */
 export interface QuotaSnapshot {
   readonly windows: readonly QuotaWindow[]
-  /** Subscription period reported alongside the windows, when available. */
-  readonly planLabel: string | undefined
   /** Fetched-at clock, so the console can say how stale the numbers are. */
   readonly fetchedAtMs: number
 }
@@ -64,23 +81,21 @@ export class QuotaNetworkError extends Error {
 }
 
 /**
- * Server status codes that mean "this grant will not work, sign in again".
+ * Status code that means "this grant will not work, sign in again".
  *
- * `1004` is `not login` — the service saw no credential at all. `1016` is
- * `invalid api key`, which is what the same service answers when a credential
- * *is* present but rejected. Verified against the live endpoint: an omitted
- * credential and a rejected one produce different codes, so mapping only the
- * first would report a stale grant as a transient network problem and never
- * offer the operator a way back in.
+ * Only `1016` is here because only `1016` has been observed. An earlier version
+ * also listed `1004` on the strength of a note claiming the service distinguishes
+ * a missing credential (`1004`) from a rejected one (`1016`); probing the live
+ * endpoint with no header, an empty header, and two garbage bearers returns
+ * `1016 invalid api key` for all four. There is no such distinction to make, and
+ * the raw code travels in the message either way, so an unrecognised code still
+ * reports what the server actually said.
  */
-const AUTH_STATUS_CODES = new Set([1004, 1016])
-
-/** Window status meaning the allowance does not actually cap usage. */
-const UNLIMITED_STATUS = 3
+const AUTH_STATUS_CODES = new Set([1016])
 
 /**
- * The wire sends percentages as strings, sometimes with a trailing `%`, and
- * omits the field entirely for a window the plan does not meter.
+ * The wire sends percentages as strings with a trailing `%`, and omits the
+ * field entirely for a window the plan does not meter.
  * @param value - the raw field, of unknown shape.
  * @returns the number, or undefined when the field is absent or unusable.
  */
@@ -93,7 +108,7 @@ function parsePercent(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-/** Allowance total, defaulting to a full window when the server omits it. */
+/** Allowance total. A plan metered above 100% keeps that number. */
 function toTotal(value: unknown): number {
   const parsed = parsePercent(value)
   return parsed !== undefined && parsed > 0 ? parsed : 100
@@ -105,48 +120,55 @@ function toUsed(value: unknown): number {
   return parsed === undefined ? 0 : Math.max(0, parsed)
 }
 
-/** Parse a reset instant that may be epoch seconds, millis, or ISO-ish text. */
-function toResetAt(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value > 0 ? (value > 1e11 ? value : value * 1000) : undefined
-  }
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Date.parse(value)
-    if (Number.isFinite(parsed)) return parsed
+/** Parse an epoch instant that may arrive in seconds or milliseconds. */
+function toEpochMs(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return value > 1e11 ? value : value * 1000
   }
   return undefined
 }
 
-/** Coerce an arbitrary percentage into a 0..100 whole number. */
-function clampPercent(value: number): number {
-  return Math.max(0, Math.min(100, Math.round(value)))
+/** Parse a duration in milliseconds, dropping the `-1` the server uses for "none". */
+function toDurationMs(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value
+  return undefined
 }
 
-/** Build one window from the response's paired total/used/status fields. */
+/** Parse a small integer field such as `*_status`. */
+function toStatus(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+/**
+ * The server marks a window unmetered by sending `-1` counts. A window is
+ * metered when at least one of its counts is a real number.
+ */
+function isMetered(total: unknown, used: unknown): boolean {
+  return (typeof total === 'number' && total >= 0) || (typeof used === 'number' && used >= 0)
+}
+
+/** Build one window from the paired total/used/status fields of a model entry. */
 function readWindow(
-  source: Record<string, unknown>,
-  id: QuotaWindow['id'],
-  label: string,
+  entry: Record<string, unknown>,
+  model: string,
+  window: 'interval' | 'weekly',
   totalField: string,
   usedField: string,
   statusField: string,
   resetField: string,
+  remainsField: string,
+  totalCountField: string,
+  usedCountField: string,
 ): QuotaWindow {
-  const total = toTotal(source[totalField])
-  const used = clampPercent(toUsed(source[usedField]))
   return {
-    id,
-    label,
-    totalPercent: clampPercent(total),
-    // Clamp against the window's own total so a server-side rounding
-    // overshoot cannot render as more than 100% consumed.
-    usedPercent: Math.min(used, clampPercent(total)),
-    resetAtMs: toResetAt(source[resetField]),
-    unlimited: source[statusField] === UNLIMITED_STATUS,
-    present: source[totalField] !== undefined
-      || source[usedField] !== undefined
-      || source[statusField] !== undefined
-      || source[resetField] !== undefined,
+    model,
+    window,
+    totalPercent: toTotal(entry[totalField]),
+    usedPercent: toUsed(entry[usedField]),
+    resetAtMs: toEpochMs(entry[resetField]),
+    remainsMs: toDurationMs(entry[remainsField]),
+    metered: isMetered(entry[totalCountField], entry[usedCountField]),
+    status: toStatus(entry[statusField]),
   }
 }
 
@@ -162,14 +184,10 @@ export interface QuotaClientOptions {
 }
 
 /**
- * Read the current allowance windows.
- *
- * The token is sent as a bare `token` header, not `Authorization: Bearer` —
- * that is the header this service checks, and a bearer header alone answers
- * `1004` even with a valid grant.
+ * Read the current allowance windows for every model the plan meters.
  *
  * @param options - the grant to read with and the origins to read from.
- * @returns the parsed windows, or an empty list when the plan meters neither.
+ * @returns the windows, grouped by the model each was reported under.
  * @throws {QuotaAuthError} when the service rejects the grant.
  * @throws {QuotaNetworkError} when the request could not be completed.
  */
@@ -183,8 +201,7 @@ export async function fetchQuota(options: QuotaClientOptions): Promise<QuotaSnap
     const response = await doFetch(url, {
       method: 'GET',
       headers: {
-        token: options.token,
-        'content-type': 'application/json',
+        authorization: `Bearer ${options.token}`,
         accept: 'application/json',
       },
     })
@@ -211,32 +228,33 @@ export async function fetchQuota(options: QuotaClientOptions): Promise<QuotaSnap
   const base = (body.base_resp ?? {}) as BaseResp
   const code = base.status_code
   if (code !== undefined && code !== 0) {
-    if (AUTH_STATUS_CODES.has(code)) {
-      throw new QuotaAuthError(code, base.status_msg ?? 'the MiniMax grant was rejected')
-    }
-    throw new QuotaNetworkError(`quota service error ${String(code)}: ${base.status_msg ?? 'unknown'}`)
+    const message = `quota service error ${String(code)}: ${base.status_msg ?? 'unknown'}`
+    if (AUTH_STATUS_CODES.has(code)) throw new QuotaAuthError(code, message)
+    throw new QuotaNetworkError(message)
   }
 
-  // The windows live at the top level next to `base_resp`; tolerate a nested
-  // `data` envelope so a future shape change degrades to "no data" instead of
-  // reading unrelated keys as percentages.
-  const source = (
-    body.data !== null && typeof body.data === 'object' ? body.data : body
-  ) as Record<string, unknown>
+  // The windows live in `model_remains`, one entry per model family. A body
+  // without it is a plan that meters nothing, not a shape change to guess at.
+  const entries = Array.isArray(body.model_remains)
+    ? body.model_remains.filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === 'object')
+    : []
 
-  const windows = [
-    readWindow(source, 'interval', '本周期（5 小时窗口）',
-      'current_interval_total_percent', 'current_interval_used_percent',
-      'current_interval_status', 'end_time'),
-    readWindow(source, 'weekly', '本周',
-      'current_weekly_total_percent', 'current_weekly_used_percent',
-      'current_weekly_status', 'weekly_end_time'),
-  ]
-
-  const planName = source.plan_name ?? source.planName ?? body.plan_name
-  return {
-    windows,
-    planLabel: typeof planName === 'string' && planName.trim() ? planName : undefined,
-    fetchedAtMs: now,
+  const windows: QuotaWindow[] = []
+  for (const entry of entries) {
+    const model = typeof entry.model_name === 'string' && entry.model_name.trim()
+      ? entry.model_name
+      : 'unknown'
+    windows.push(
+      readWindow(entry, model, 'interval',
+        'current_interval_total_percent', 'current_interval_used_percent',
+        'current_interval_status', 'end_time', 'remains_time',
+        'current_interval_total_count', 'current_interval_used_count'),
+      readWindow(entry, model, 'weekly',
+        'current_weekly_total_percent', 'current_weekly_used_percent',
+        'current_weekly_status', 'weekly_end_time', 'weekly_remains_time',
+        'current_weekly_total_count', 'current_weekly_used_count'),
+    )
   }
+
+  return { windows, fetchedAtMs: now }
 }
