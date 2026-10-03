@@ -26,7 +26,10 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx smoke.ts",
-    "signin": "node signin.mjs"
+    "signin": "node signin.mjs",
+    "wiring": "node wiring.mjs",
+    "quota-smoke": "node quota-smoke.mjs",
+    "quota-probe": "node quota-probe.mjs"
   },
   "dsh": {
     "bundle": {

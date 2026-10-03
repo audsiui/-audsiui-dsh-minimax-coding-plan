@@ -15,7 +15,7 @@ export const OAUTH_AUDIENCE = 'agent-backend'
 /** IETF device-authorization grant type used by the token endpoint. */
 export const DEVICE_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code'
 
-/** One region's account and inference origins. */
+/** One region's account, inference, and quota origins. */
 export interface RegionEndpoints {
   /** OAuth authorization server: device code, token, and revoke. */
   readonly accountOrigin: string
@@ -24,6 +24,14 @@ export interface RegionEndpoints {
    * value must not end in `/v1` — the transport strips and re-adds it.
    */
   readonly inferenceOrigin: string
+  /**
+   * Open-platform origin serving `/backend/account/token_plan/*`.
+   *
+   * Distinct from {@link inferenceOrigin}: the same grant is accepted here,
+   * but the read is a *different* trust decision, so it is listed explicitly
+   * rather than folded into one "any known host" check.
+   */
+  readonly quotaOrigin: string
 }
 
 /** Regions MiniMax serves, selected by configuration. */
@@ -31,10 +39,12 @@ export const REGION_ENDPOINTS = {
   cn: {
     accountOrigin: 'https://account.minimax.cn',
     inferenceOrigin: 'https://agent.minimax.cn/mavis/api/v1/llm',
+    quotaOrigin: 'https://www.minimaxi.com',
   },
   en: {
     accountOrigin: 'https://account.minimax.io',
     inferenceOrigin: 'https://agent.minimax.io/mavis/api/v1/llm',
+    quotaOrigin: 'https://platform.minimax.io',
   },
 } as const satisfies Record<string, RegionEndpoints>
 

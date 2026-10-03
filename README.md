@@ -33,10 +33,15 @@ Fixed values, not configurable: `client_id=mcode-public`, `scope=agent.default`,
 `audience=agent-backend`. `mcode-public` is a **public client** — there is no
 client secret, and PKCE (`S256`) is the only binding.
 
-| Region | Account origin | Messages origin |
-| --- | --- | --- |
-| `cn` | `https://account.minimax.cn` | `https://agent.minimax.cn/mavis/api/v1/llm` |
-| `en` | `https://account.minimax.io` | `https://agent.minimax.io/mavis/api/v1/llm` |
+| Region | Account origin | Messages origin | Quota origin |
+| --- | --- | --- | --- |
+| `cn` | `https://account.minimax.cn` | `https://agent.minimax.cn/mavis/api/v1/llm` | `https://www.minimaxi.com` |
+| `en` | `https://account.minimax.io` | `https://agent.minimax.io/mavis/api/v1/llm` | `https://platform.minimax.io` |
+
+The quota origin is the open platform, **not** the account origin. `/backend/…`
+routes do not exist on `account.minimax.cn` — they answer with the account
+site's Next.js `404` page, which reads as "not deployed" if you only look at
+the status code.
 
 ### Revocation is not deployed
 
@@ -59,6 +64,7 @@ local credential but does not invalidate the refresh token server-side.**
     # baseURL: https://agent.minimax.cn/mavis/api/v1/llm   # must NOT end in /v1
     # credentialsPath: ~/.dsh/minimax-coding-plan/credential.json
     # openBrowser: true
+    # consolePort: 0                 # 0 = pick a free port; the URL is logged at startup
     models:                      # required: there is no discovery route
       - id: MiniMax-M3.1-Flash-Preview
         name: MiniMax M3.1 Flash (Preview)
@@ -106,10 +112,95 @@ account still reads as a fallback — so a credential obtained either way keeps
 working across the change, and the provider refreshes it on its own from then
 on.
 
-There is no settings button yet. Rendering one needs a browser half-side
-(`dsh.client` plus a `plugins.detail.actions` slot), and the `clientBundle`
-tsdown preset that produces that artifact is not in any published package, so
-an out-of-repo package replicates the build step itself.
+### Why the buttons live on a local page, not in the harness UI
+
+This plugin cannot put a sign-in button inside the DeepSeek Harness window,
+and the reason is structural rather than incidental. A harness client plugin
+(`dsh.client` plus a slot such as `plugins.detail.actions`) can render
+whatever it likes, but it has no sanctioned way to reach *this* process's
+services. The only documented host channel is the Typert Remote API
+(`ctx.remote.<namespace>`), and reaching it needs both halves of a build-time
+contract that a third-party package cannot satisfy:
+
+- `api-gateway.zh.md` documents that the Typert generator runs inside dsh's
+  own root build, where both tsdown passes match only `vendor/*`,
+  `packages/*/*`, `apps/cli`, and `apps/desktop-host`. A package installed from
+  git lives in `node_modules` and is never in that set, so no `typert.host.js`
+  or `typert.remote-client.js` is ever generated for it.
+- The same document states that mounting a contribution is "an explicit choice
+  of the Client composition owner" — the shipped app's `dsh-api-remotes`
+  assembly, which a plugin author cannot edit.
+- The source-mode fallback is not a way around it. `api-gateway.zh.md` is
+  explicit that SRC descriptors only solve *Host* dispatch, and that the client
+  refuses to mount a descriptor lacking a strict generated codec.
+- The escape hatch — registering an exact Connection Fetch route — does not
+  exist in the desktop app: `web-server.zh.md` states the HTTP server serves
+  browsers only, and Electron loads over `file://` and sends its fetches
+  through an IPC bridge.
+
+So the surface is a loopback page this plugin serves itself. What that costs:
+it is a separate tab, not a panel in the harness window.
+
+## The console
+
+With the plugin enabled, the host logs a URL at startup:
+
+```text
+minimax-console: open http://127.0.0.1:6173/4qwWUb9jlGxUc2Z118uic2jkoHF94w3b/
+```
+
+That page carries the sign-in button, the sign-out button, and the usage
+readout with a **本周期 / 本周** toggle. It is served by `MinimaxConsole`, a
+Cordis service, so disabling the plugin closes the socket.
+
+Three independent guards, because a listener that can start a login should not
+be reachable by anything the operator merely visits:
+
+- It binds `127.0.0.1` explicitly, so it is not on the network at all.
+- Every path is prefixed with a 24-byte random secret generated per process.
+  Without it there is no entry point — a wrong or missing prefix is a `404`,
+  not a page.
+- Every request must carry a `Host` naming loopback, which is what closes DNS
+  rebinding: an attacker-controlled name that resolves to `127.0.0.1` still
+  gets a `421`.
+
+The URL is logged rather than opened, because opening it on every host start
+would leave a signed-in tab behind. `consolePort` pins the port when a stable
+one is wanted; the default `0` takes a free port.
+
+The sign-in request returns as soon as the device attempt is under way and the
+page polls `api/state` until the status settles — the grant takes as long as
+the operator takes to approve it. `MinimaxAccount.signIn()` already collapses
+concurrent callers onto one attempt, so a double click starts one.
+
+### What the usage numbers are
+
+`GET {quotaOrigin}/backend/account/token_plan/remains_percent`, carrying the
+grant as a bare `token` header. Two findings worth recording:
+
+- **No request signature.** The `yy` / `x-timestamp` / `x-signature` triple
+  used elsewhere in MiniMax's stack belongs to the matrix gateway and the
+  plugin-system cloud transport, not to these routes. A probe of seven header
+  shapes against the live endpoint returned an identical answer for all of
+  them (verified 2026-10-03).
+- **Failures arrive in the body, not the status.** The service answers `200`
+  and reports the outcome in `base_resp.status_code`. An omitted credential is
+  `1004` (`not login`); a rejected one is `1016` (`invalid api key`). Both map
+  to `QuotaAuthError` so the console offers sign-in again instead of showing a
+  retry that cannot work.
+
+The response meters exactly two windows — a short `interval` window and a
+`weekly` one. **There is no monthly allowance field**, so the console has no
+monthly line to draw; the toggle covers the two windows the service actually
+reports, and a window the plan does not meter renders as absent rather than as
+`0%`. The model ids and plan name come from the same payload where present.
+
+Run the live probe with a deliberately invalid grant:
+
+```sh
+npm run quota-smoke   # expects QuotaAuthError: the endpoint was reached and evaluated
+npm run quota-probe   # prints the base_resp for seven credential header shapes
+```
 
 Every field from the Messages protocol schema (`thinking`, `reasoningEffort`,
 `maxTokens`, `defaultContextWindow`, `streamIdleTimeoutMs`, `retryPolicy`, …) is
@@ -310,6 +401,8 @@ third-party install will work.
 | build | `npm run build` | the self-contained publish build, all host deps external |
 | live | `npm run smoke` | OAuth + credential store against the **live** account origin |
 | wiring | `node wiring.mjs` | `apply()` inside a real Cordis context with the real LLM runtime |
+| quota shape | `node quota-smoke.mjs` | the usage read against the **live** endpoint with an invalid grant |
+| header probe | `node quota-probe.mjs` | which credential header the service actually reads |
 
 **When you change `src/`, run `npm run build` and commit `lib/` in the same
 commit.** `lib/` is tracked on purpose (see the git-install note above), so a

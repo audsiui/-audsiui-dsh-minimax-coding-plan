@@ -20,10 +20,20 @@ import {
 } from '@deepseek-ai/dsh-llm-deepseek'
 import { MinimaxAccount } from './account.ts'
 import { registerMinimaxAuthorization } from './authorization.ts'
+import { MinimaxConsole } from './console.ts'
 import { Config, endpointsFor } from './config.ts'
 
 export { Config, defaultCredentialsPath, endpointsFor } from './config.ts'
 export { registerMinimaxAuthorization } from './authorization.ts'
+export { MinimaxConsole, type ConsoleState, type MinimaxConsoleOptions } from './console.ts'
+export {
+  fetchQuota,
+  QuotaAuthError,
+  QuotaNetworkError,
+  type QuotaClientOptions,
+  type QuotaSnapshot,
+  type QuotaWindow,
+} from './quota.ts'
 export { GRANT_KEY, grantPayload, parseGrantPayload, readGrant, writeGrant, clearGrant } from './grant.ts'
 export { MinimaxAccount, type MinimaxAccountOptions, type MinimaxAccountState } from './account.ts'
 export {
@@ -75,6 +85,22 @@ export function apply(ctx: Context, config: Config): void {
     region,
     credentialsPath: config.credentialsPath,
     openBrowser: config.openBrowser,
+  })
+
+  // The harness GUI cannot host a surface for a third-party package: its
+  // client half reaches the host only through Remote contributions that dsh's
+  // own build pipeline generates for its own packages. So the sign-in button,
+  // the sign-out button, and the usage readout live on a loopback console this
+  // plugin serves. The authorization flow above stays registered as the
+  // in-harness path, and the console is the one that works everywhere.
+  const console_ = new MinimaxConsole(ctx, {
+    account,
+    endpoints,
+    region,
+    port: config.consolePort,
+  })
+  ctx.inject([console_], () => {
+    void console_.start()
   })
 
   // `baseURL` and `models` stay volatile so a settings edit reaches the next

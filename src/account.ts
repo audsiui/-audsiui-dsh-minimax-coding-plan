@@ -58,7 +58,7 @@ export interface MinimaxAccountOptions {
 /**
  * MiniMax Coding Plan credentials.
  *
- * The service hands out a token only for the inference origin it was
+ * The service hands out a token only for the origins this plugin is
  * configured with, so a misrouted request cannot leak the grant to a host
  * that happens to receive the header.
  */
@@ -236,28 +236,41 @@ export class MinimaxAccount extends Service {
   }
 
   /**
-   * Accept only the configured inference origin.
+   * Accept only the origins this plugin itself talks to.
    *
    * Comparing parsed URL components rather than prefixes rejects lookalikes
    * such as `https://agent.minimax.cn.evil.test`, a non-HTTPS scheme, an
-   * explicit port, and embedded credentials.
+   * explicit port, and embedded credentials. The allowlist is the two
+   * configured origins — inference and quota — not "any host we know of", so
+   * adding a destination is a deliberate edit rather than a side effect.
    */
   private isAllowedOrigin(url: string): boolean {
     let candidate: URL
-    let allowed: URL
     try {
       candidate = new URL(url)
-      allowed = new URL(this.options.endpoints.inferenceOrigin)
     }
     catch {
       return false
     }
-    return candidate.protocol === 'https:'
-      && candidate.host === allowed.host
-      && candidate.username === ''
-      && candidate.password === ''
-      && candidate.port === ''
-      && candidate.origin === allowed.origin
+    if (candidate.protocol !== 'https:'
+      || candidate.username !== ''
+      || candidate.password !== ''
+      || candidate.port !== '') {
+      return false
+    }
+    return this.allowedOrigins().some((allowed) => {
+      try {
+        return candidate.origin === new URL(allowed).origin
+      }
+      catch {
+        return false
+      }
+    })
+  }
+
+  /** Configured origins permitted to receive the grant. */
+  private allowedOrigins(): readonly string[] {
+    return [this.options.endpoints.inferenceOrigin, this.options.endpoints.quotaOrigin]
   }
 }
 
