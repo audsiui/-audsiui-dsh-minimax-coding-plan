@@ -1,0 +1,134 @@
+/**
+ * MiniMax Coding Plan provider for DeepSeek Harness.
+ *
+ * The endpoint speaks the Anthropic Messages protocol, so this plugin reuses
+ * the Messages transport from `@deepseek-ai/dsh-llm-deepseek` and only owns
+ * the credential: a public-client OAuth device-authorization grant against the
+ * MiniMax account origin, refreshed automatically before each use.
+ */
+import type {} from '@deepseek-ai/cordis-plugin-loader'
+import type { Context } from '@deepseek-ai/cordis'
+import { ACCOUNT_QUOTA_EXCEEDED_CODE, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
+import {
+  catalogModelInfo,
+  plainOptions,
+  registerDeepSeekProvider,
+  resolveAdapterOptions,
+  type DeepSeekRequestAuth,
+  type ResolvedDeepSeekOptions,
+} from '@deepseek-ai/dsh-llm-deepseek'
+import { MinimaxAccount } from './account.ts'
+import { Config, endpointsFor } from './config.ts'
+
+export { Config, defaultCredentialsPath, endpointsFor } from './config.ts'
+export { MinimaxAccount, type MinimaxAccountOptions, type MinimaxAccountState } from './account.ts'
+export {
+  OAUTH_AUDIENCE,
+  OAUTH_CLIENT_ID,
+  OAUTH_SCOPE,
+  REGION_ENDPOINTS,
+  TOKEN_REFRESH_MARGIN_MS,
+  type Region,
+  type RegionEndpoints,
+} from './constants.ts'
+export {
+  OAuthProtocolError,
+  pollDeviceToken,
+  refreshAccessToken,
+  requestDeviceAuthorization,
+  revokeRefreshToken,
+  type DeviceAuthorization,
+  type OAuthClientOptions,
+  type TokenGrant,
+} from './oauth.ts'
+export { clearCredential, readCredential, writeCredential, type StoredCredential } from './store.ts'
+
+export const name = 'llm-minimax-coding-plan'
+export const inject = ['llm']
+
+/** Provider route this plugin owns. */
+const PROVIDER = 'minimax-coding-plan'
+
+/**
+ * Register the account service and the provider route backed by it.
+ * @param ctx - context owning this plugin lifetime with the LLM registry injected.
+ * @param config - parsed plugin configuration.
+ */
+export function apply(ctx: Context, config: Config): void {
+  const region = config.region
+  const endpoints = endpointsFor(region)
+
+  const account = new MinimaxAccount(ctx, {
+    endpoints,
+    region,
+    credentialsPath: config.credentialsPath,
+    openBrowser: config.openBrowser,
+  })
+
+  // `baseURL` and `models` stay volatile so a settings edit reaches the next
+  // request without re-registering the adapter; read them per operation.
+  const options = (): ResolvedDeepSeekOptions => {
+    const plain = plainOptions(config)
+    return resolveAdapterOptions({ ...plain, baseURL: plain.baseURL ?? endpoints.inferenceOrigin })
+  }
+
+  const resolveAuth = async (connection: ResolvedDeepSeekOptions): Promise<DeepSeekRequestAuth> => {
+    const token = await account.resolveToken(connection.baseURL)
+    if (token === undefined) {
+      throw new LlmError(
+        'Sign in to MiniMax to use the Coding Plan provider. Run the `llm-minimax-coding-plan` sign-in, or enable automatic sign-in.',
+        'ACCOUNT_SIGN_IN_REQUIRED',
+      )
+    }
+    return {
+      headers: { Authorization: `Bearer ${token}` },
+      onRequestError: async (error) => {
+        if (!(error instanceof LlmError)) return error
+        if (error.code === QUOTA_EXCEEDED_CODE) {
+          return new LlmError(error.message, ACCOUNT_QUOTA_EXCEEDED_CODE, { ...error.failure, cause: error })
+        }
+        if (error.failure.status !== 401) return error
+        // Drop the rejected token only while it is still the stored one, so a
+        // late 401 from a superseded request cannot sign out a fresh session.
+        try {
+          await account.rejectToken(token)
+        }
+        catch (error) {
+          ctx.logger.warn('minimax-coding-plan: could not retire the rejected token: %o', error)
+        }
+        return new LlmError(
+          'The MiniMax access token was rejected. Sign in again to continue.',
+          'ACCOUNT_TOKEN_INVALID',
+          { ...error.failure, cause: error },
+        )
+      },
+    }
+  }
+
+  ctx.llm.registerConfigurableProviders([{
+    provider: PROVIDER,
+    displayName: 'MiniMax Coding Plan',
+    settingsNs: ctx.fiber.entry?.options.id ?? name,
+    settingsPath: [],
+  }])
+
+  registerDeepSeekProvider(ctx, PROVIDER, {
+    options,
+    resolveAuth,
+    providerName: 'MiniMax Coding Plan',
+    discoverModels: async (provider) => {
+      try {
+        await resolveAuth(options())
+      }
+      catch (error) {
+        // A signed-out account is a normal state, not a discovery failure:
+        // report no models so the selector asks for sign-in instead of erroring.
+        if (error instanceof LlmError && error.code === 'ACCOUNT_SIGN_IN_REQUIRED') return []
+        throw error
+      }
+      return options().models.map(model => catalogModelInfo(provider, model))
+    },
+  })
+}
+
+export default apply

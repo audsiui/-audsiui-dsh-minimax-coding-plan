@@ -1,0 +1,9 @@
+# Normalize to LF in the repository and the working tree. A Node package should
+# not accumulate CRLF churn from Windows checkouts, and line endings in a
+# published bundle are not something to inherit from the checkout OS.
+* text=auto eol=lf
+
+# These are never line-ending-sensitive, so keep git out of their bytes.
+*.png binary
+*.jpg binary
+*.tgz binary

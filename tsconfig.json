@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2024"],
+    "types": ["node"],
+
+    /* Source files import each other with explicit `.ts` extensions, the same
+       convention the harness repository uses. rolldown rewrites them at build
+       time; `tsc` only ever type-checks, so it must not emit. */
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "noEmit": true,
+
+    /* Mirrors the strictness of the harness repository's `tsconfig.base.json`
+       so a change that would fail there also fails here. */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src"]
+}

@@ -1,0 +1,69 @@
+{
+  "name": "@audsiui/dsh-minimax-coding-plan",
+  "description": "MiniMax Coding Plan provider for DeepSeek Harness, authenticated with the MiniMax OAuth device-authorization grant",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "audsiui",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "src/",
+    "cordis.patch.yml",
+    "tsdown.config.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "prepare": "tsdown",
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx smoke.ts"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml"
+      ]
+    }
+  },
+  "//": "Peers are concrete semver ranges, never the workspace: protocol. dsh's plugin manager reads this manifest and rejects an incompatible DSH peer *before* pnpm runs, and a workspace: range is unresolvable outside a pnpm workspace — which is where a profile lives. schemastery is pinned to the range dsh-llm-deepseek itself depends on, because this package composes its schema objects and both sides must share one instance.",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0 <5.0.0",
+    "@deepseek-ai/cordis-plugin-loader": ">=1.0.0 <2.0.0",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-llm-deepseek": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/schemastery": "~3.18.4"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis-plugin-loader": {
+      "optional": true
+    }
+  },
+  "//dev": "A dsh package that must share the host's instance is declared in both peerDependencies and devDependencies: the peer is what the running harness supplies, the dev copy is what typechecks and unit-tests here.",
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.4",
+    "@deepseek-ai/cordis-plugin-loader": "^1.0.5",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm-deepseek": "0.2.0-rc.2",
+    "@deepseek-ai/schemastery": "3.18.4",
+    "@types/node": "^22.19.0",
+    "tsdown": "^0.22.2",
+    "tsx": "^4.20.0",
+    "typescript": ">=5 <7"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "minimax",
+    "anthropic",
+    "oauth"
+  ]
+}

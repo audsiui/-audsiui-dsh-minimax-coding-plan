@@ -1,0 +1,16 @@
+- insert:
+    - id: llm-minimax-coding-plan
+      name: '@audsiui/dsh-minimax-coding-plan'
+      config:
+        # `cn` serves account.minimax.cn and agent.minimax.cn; `en` serves the
+        # .io pair. Pick the region your Coding Plan account belongs to.
+        region: cn
+
+        # MiniMax exposes no model-discovery route on this endpoint (both
+        # /models and /v1/models answer `direct_route_not_configured`), so the
+        # catalog cannot be enumerated and must be declared. Replace this with
+        # the wire ids your plan actually serves. A wrong entry breaks the
+        # model selector, not the request.
+        models:
+          - id: MiniMax-M3.1-Flash-Preview
+            name: MiniMax M3.1 Flash (Preview)

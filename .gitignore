@@ -1,0 +1,16 @@
+# Build output and dependencies. `prepare` regenerates lib/ from src/ on a git
+# install, and the harness runs pnpm inside the profile, so neither belongs in
+# the repository.
+node_modules/
+lib/
+*.tsbuildinfo
+
+# Dependencies are installed with pnpm by the harness; an npm lockfile would be
+# dead weight here and npm's own default .gitignore excludes it from libraries.
+package-lock.json
+pnpm-lock.yaml
+
+*.log
+.DS_Store
+.env
+.env.*
