@@ -131,12 +131,19 @@ check('the page reaches dsh primitives, not raw elements', source.includes('Segm
 // web-styling.zh.md:17 — component styles are CSS Modules, not a global sheet.
 check('component styles are a CSS Module, not a global sheet',
   !/(^|\})\s*\.minimax-[\w-]/.test(stylesheet))
-// lightningcss's `[hash]_[local]` pattern: a short hash, an underscore, the local
+// lightningcss's `[hash]_[local]` pattern: a hash, an underscore, the local
 // name. Both the selector and the class map have to carry it, or `styles.page`
 // resolves to a class the stylesheet never defines.
-const scopedName = /"page": "([A-Za-z0-9]+_[A-Za-z0-9]+_page)"/
+//
+// The hash is not a fixed shape or a fixed length. It used to be checked as
+// three underscore-separated segments, which only passed because an absolute
+// build path made lightningcss emit an underscore inside the hash; the moment
+// the hash became path-independent the check failed on a perfectly good bundle.
+// What actually matters is that the mapped name ends in the local name and that
+// the stylesheet defines exactly that selector.
+const scopedName = /"page":\s*"([A-Za-z0-9_-]+_page)"/
 const mapped = scopedName.exec(source)
-check('the bundle carries scoped class names', mapped !== null)
+check('the bundle carries scoped class names', mapped !== null, source.match(/"page":\s*"([^"]*)"/)?.[1])
 check('the stylesheet defines the class the map names', mapped !== null && source.includes(`.${mapped[1]}{`))
 
 // web-styling.zh.md:18 — semantic tokens only, and a `var()` fallback is not a
@@ -288,6 +295,24 @@ check('no chunk escapes the loader naming convention',
   !existsSync(resolve(import.meta.dirname, 'lib')) ||
   readdirSync(resolve(import.meta.dirname, 'lib')).every(name => !/^chunk-.*\.js$/.test(name)),
   readdirSync(resolve(import.meta.dirname, 'lib')).filter(name => /^chunk-.*\.js$/.test(name)).join(', '))
+
+// The bundle has to be the same everywhere. rolldown writes each module's id
+// into a `//#region` comment and the CSS Modules `[hash]` is derived from the
+// filename, so an absolute path made two builds of the same commit differ — and
+// put the build machine's home directory inside a published artifact. Verified
+// by rebuilding this package in a second directory and diffing: 96/96 files
+// identical now, 1 differing before.
+if (existsSync(bundlePath)) {
+  const shipped = [bundlePath, `${bundlePath}.map`]
+  // Only an absolute path is a leak. `../src/client/MinimaxPage.tsx` is the
+  // map doing its job: the browser resolves it against the map's own URL. The
+  // drive letter has to be followed by a single separator, otherwise `https://`
+  // matches on its `s:/`.
+  const absolute = /(?:^|[^A-Za-z])[A-Za-z]:[\\/](?![\\/])/u
+  check('no build machine path is published',
+    shipped.every(path => !absolute.test(readFileSync(path, 'utf8'))),
+    shipped.filter(path => absolute.test(readFileSync(path, 'utf8'))).join(', '))
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

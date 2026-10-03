@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
-import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { transform } from 'lightningcss'
 import { RolldownMagicString } from 'rolldown'
 import { defineConfig } from 'tsdown'
@@ -70,6 +70,25 @@ function sourceAssetPath(source: string, importer: string): string {
   return resolve(emitted.slice(0, boundary), 'src', emitted.slice(boundary + TYPES_MARKER.length))
 }
 
+/** This package's own root; the CSS hash and the emitted paths are relative to it. */
+const PROJECT_ROOT = resolve(import.meta.dirname)
+
+/**
+ * The name lightningcss hashes a CSS Modules class name from.
+ *
+ * The preset passes the absolute file id, which is right there — every dsh build
+ * happens in one checkout at one path. This package is installed into other
+ * people's trees, and the `[hash]` in `[hash]_[local]` is derived from the
+ * filename: the same stylesheet built in two directories produced `.KLfycW` and
+ * `.Mx_84G` for the same `.page` class. The bundle is still correct within
+ * itself, but the committed artifact no longer matched a rebuild, and the class
+ * name silently carried the build machine's layout. Relative to this package's
+ * root, it depends on the file and nothing else.
+ */
+function hashedName(fileId: string): string {
+  return relative(PROJECT_ROOT, fileId).split(sep).join('/')
+}
+
 /**
  * Emit one plugin-owned style injector and the CSS Modules class map.
  *
@@ -123,7 +142,7 @@ const cssModulesInline = {
     this.addWatchFile(fileId)
     const source = await readFile(fileId)
     const { code, exports: cssExports } = transform({
-      filename: fileId,
+      filename: hashedName(fileId),
       code: source,
       cssModules: { pattern: '[hash]_[local]' },
       minify: true,
@@ -153,7 +172,7 @@ const cssTextInline = {
     const fileId = virtualId.slice(INLINE_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
     this.addWatchFile(fileId)
     const source = await readFile(fileId)
-    const { code } = transform({ filename: fileId, code: source, minify: true })
+    const { code } = transform({ filename: hashedName(fileId), code: source, minify: true })
     return `export default ${JSON.stringify(code.toString())};`
   },
 }
@@ -177,7 +196,7 @@ const cssGlobalInline = {
     const fileId = virtualId.slice(GLOBAL_CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
     this.addWatchFile(fileId)
     const source = await readFile(fileId)
-    const { code } = transform({ filename: fileId, code: source, minify: true })
+    const { code } = transform({ filename: hashedName(fileId), code: source, minify: true })
     return styleInjectionModule(PACKAGE_ID, fileId, code.toString())
   },
 }
@@ -255,6 +274,42 @@ function tscSourceMapPlugin() {
 /** Escape a specifier for embedding in the RegExp below. */
 function escapeSpecifier(name: string): string {
   return name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Keep the build directory out of the shipped bundle.
+ *
+ * The virtual CSS ids are absolute — the load hook has to find the file on disk
+ * — and rolldown writes each module's id into a `//#region` comment in the
+ * output. That put `C:\Users\<name>\...\dsh-minimax-coding-plan\lib\...` inside
+ * a published artifact, and made the build non-reproducible: rebuilding the same
+ * commit in a different directory produced a different `lib/client.js`, verified
+ * by rebuilding in a second tree and diffing the two bundles.
+ *
+ * `sourcemapPathTransform` in the preset solves the same leak for the map by
+ * rebasing onto the repository's directory layout. There is nothing to rebase
+ * onto here — a third-party package has no place in dsh's tree — so the build
+ * root is collapsed to `.`, which keeps the paths meaningful and relative.
+ *
+ * The rewrite shortens the text, so it goes through a MagicString: returning a
+ * bare string from `renderChunk` leaves rolldown with a map whose offsets no
+ * longer line up, and it warns about exactly that.
+ */
+function stripBuildPathsPlugin() {
+  const root = PROJECT_ROOT
+  return {
+    name: 'dsh-strip-build-paths',
+    renderChunk(code: string) {
+      if (!code.includes(root)) return null
+      const transformed = new RolldownMagicString(code)
+      let found = false
+      for (const match of code.matchAll(new RegExp(escapeSpecifier(root), 'gu'))) {
+        transformed.overwrite(match.index, match.index + root.length, '.')
+        found = true
+      }
+      return found ? transformed : null
+    },
+  }
 }
 
 /**
@@ -423,7 +478,7 @@ export default defineConfig([
       'import.meta.env.MODE': JSON.stringify(process.env.NODE_ENV ?? 'production'),
       'import.meta.env': JSON.stringify({ MODE: process.env.NODE_ENV ?? 'production' }),
     },
-    plugins: [clientBundlePurity, tscSourceMapPlugin(), asyncChunkRequirePlugin(), cssModulesInline, cssTextInline, cssGlobalInline],
+    plugins: [clientBundlePurity, tscSourceMapPlugin(), asyncChunkRequirePlugin(), stripBuildPathsPlugin(), cssModulesInline, cssTextInline, cssGlobalInline],
     outputOptions: {
       entryFileNames: 'client.js',
       // A split chunk is fetched as `./client.<name>.js` by the loader bridge,
