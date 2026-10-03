@@ -14,7 +14,8 @@ import {
   type DeviceAuthorization,
   type OAuthClientOptions,
 } from './oauth.ts'
-import { clearCredential, readCredential, writeCredential, type StoredCredential } from './store.ts'
+import { clearGrant, readGrant, writeGrant } from './grant.ts'
+import { type StoredCredential } from './store.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
@@ -105,7 +106,7 @@ export class MinimaxAccount extends Service {
    */
   async resolveToken(url: string): Promise<string | undefined> {
     if (!this.isAllowedOrigin(url)) return undefined
-    const stored = await readCredential(this.options.credentialsPath)
+    const stored = await readGrant(this.ctx, this.options.credentialsPath)
     if (!stored) return undefined
     if (stored.region !== this.options.region) return undefined
 
@@ -126,10 +127,10 @@ export class MinimaxAccount extends Service {
    * @param token - token captured by the rejected request.
    */
   async rejectToken(token: string): Promise<void> {
-    const stored = await readCredential(this.options.credentialsPath)
+    const stored = await readGrant(this.ctx, this.options.credentialsPath)
     if (!stored || stored.accessToken !== token) return
     this.refreshInFlight = undefined
-    await clearCredential(this.options.credentialsPath)
+    await clearGrant(this.ctx, this.options.credentialsPath)
     this.state = { status: 'signed-out' }
     this.ctx.emit('minimax-account/signed-out')
   }
@@ -140,7 +141,7 @@ export class MinimaxAccount extends Service {
    */
   async signOut(): Promise<MinimaxAccountState> {
     this.refreshInFlight = undefined
-    const stored = await readCredential(this.options.credentialsPath)
+    const stored = await readGrant(this.ctx, this.options.credentialsPath)
     if (stored) {
       try {
         await revokeRefreshToken(this.options.endpoints, stored.refreshToken, this.options.client)
@@ -149,7 +150,7 @@ export class MinimaxAccount extends Service {
         this.ctx.logger.warn('minimax-account: revocation failed; removing the local grant anyway: %o', error)
       }
     }
-    await clearCredential(this.options.credentialsPath)
+    await clearGrant(this.ctx, this.options.credentialsPath)
     this.state = { status: 'signed-out' }
     this.ctx.emit('minimax-account/signed-out')
     return this.state
@@ -186,7 +187,7 @@ export class MinimaxAccount extends Service {
 
     try {
       const grant = await pollDeviceToken(this.options.endpoints, authorization, client)
-      await writeCredential(this.options.credentialsPath, grant, this.options.region)
+      await writeGrant(this.ctx, this.options.credentialsPath, grant, this.options.region)
       this.state = { status: 'authenticated', accountId: grant.accountId, expiresAtMs: grant.expiresAtMs }
       this.ctx.emit('minimax-account/authenticated')
       return this.state
@@ -202,7 +203,7 @@ export class MinimaxAccount extends Service {
     this.refreshInFlight ??= (async () => {
       try {
         const grant = await refreshAccessToken(this.options.endpoints, stored.refreshToken, this.options.client)
-        await writeCredential(this.options.credentialsPath, grant, this.options.region)
+        await writeGrant(this.ctx, this.options.credentialsPath, grant, this.options.region)
         const next: StoredCredential = {
           schemaVersion: 1,
           clientId: stored.clientId,
@@ -222,7 +223,7 @@ export class MinimaxAccount extends Service {
         // refresh token that can never succeed again; retire it so the next
         // request asks the operator to sign in rather than looping.
         if (error instanceof OAuthProtocolError && error.httpStatus !== undefined && error.httpStatus < 500) {
-          await clearCredential(this.options.credentialsPath)
+          await clearGrant(this.ctx, this.options.credentialsPath)
           this.state = { status: 'signed-out' }
         }
         throw error
@@ -261,7 +262,7 @@ export class MinimaxAccount extends Service {
 }
 
 /** Open a URL with the platform's default handler; failures are non-fatal. */
-function openExternal(url: string): void {
+export function openExternal(url: string): void {
   let command: string
   let args: string[]
   if (process.platform === 'win32') {

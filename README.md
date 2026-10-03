@@ -74,8 +74,26 @@ Then select the route in the model picker as `minimax-coding-plan/<model-id>`.
 The route stays hidden from discovery until a credential is stored, so an
 unsigned harness does not advertise models it cannot call.
 
-The first request before sign-in fails with `ACCOUNT_SIGN_IN_REQUIRED`. Sign in
-once with the bundled script:
+The first request before sign-in fails with `ACCOUNT_SIGN_IN_REQUIRED`.
+
+## Signing in
+
+The grant is offered as a harness **authorization flow** — `ctx.authorization`
+is the seam the harness documents for a credential nobody can supply from
+configuration alone, because getting it takes a conversation with a human. It
+owns the attempt: one per key, cancellable, and it refuses to report success
+unless a record was actually committed. This plugin owns only the protocol,
+which is the split that seam asks for.
+
+The flow reports the verification page through `session.notify({ url, code })`,
+so any surface that renders one flow renders this one, and the agent-facing
+`ctx.authorization` API can drive it too.
+
+The grant lives in `ctx.credentials` as a `GrantRecord` whose payload only this
+plugin interprets. The harness stores it at `$DSH_HOME/.credentials.yaml`
+through its local provider.
+
+`signin.mjs` remains the script path, and it needs no harness at all:
 
 ```sh
 node signin.mjs            # cn region, opens a browser
@@ -83,18 +101,15 @@ node signin.mjs en         # io region
 node signin.mjs cn --no-browser
 ```
 
-It prints a verification URL and a user code, then polls until you approve.
-The grant lands in the same `credentialsPath` the plugin reads, and the
-provider refreshes it on its own from then on — no reinstall, no restart.
+Both write the same record — the script to the legacy JSON file, which the
+account still reads as a fallback — so a credential obtained either way keeps
+working across the change, and the provider refreshes it on its own from then
+on.
 
-`signin.mjs` is a thin driver, not a second implementation: it imports
-`requestDeviceAuthorization`, `pollDeviceToken` and `writeCredential` from the
-built artifact and calls them in the same order `MinimaxAccount.signIn()` does.
-It exists because nothing in the harness calls that method yet — a settings
-button needs a browser half-side (`./client` plus a `ctx.slots.register` entry),
-and the `clientBundle` tsdown preset that produces one is not published, so an
-out-of-repo package has to replicate that build. The service method is the
-supported seam if you want to drive it from your own plugin instead.
+There is no settings button yet. Rendering one needs a browser half-side
+(`dsh.client` plus a `plugins.detail.actions` slot), and the `clientBundle`
+tsdown preset that produces that artifact is not in any published package, so
+an out-of-repo package replicates the build step itself.
 
 Every field from the Messages protocol schema (`thinking`, `reasoningEffort`,
 `maxTokens`, `defaultContextWindow`, `streamIdleTimeoutMs`, `retryPolicy`, …) is

@@ -8,6 +8,7 @@
  */
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-authorization'
 import { ACCOUNT_QUOTA_EXCEEDED_CODE, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
 import {
   catalogModelInfo,
@@ -18,9 +19,12 @@ import {
   type ResolvedDeepSeekOptions,
 } from '@deepseek-ai/dsh-llm-deepseek'
 import { MinimaxAccount } from './account.ts'
+import { registerMinimaxAuthorization } from './authorization.ts'
 import { Config, endpointsFor } from './config.ts'
 
 export { Config, defaultCredentialsPath, endpointsFor } from './config.ts'
+export { registerMinimaxAuthorization } from './authorization.ts'
+export { GRANT_KEY, grantPayload, parseGrantPayload, readGrant, writeGrant, clearGrant } from './grant.ts'
 export { MinimaxAccount, type MinimaxAccountOptions, type MinimaxAccountState } from './account.ts'
 export {
   OAUTH_AUDIENCE,
@@ -54,8 +58,17 @@ const PROVIDER = 'minimax-coding-plan'
  * @param ctx - context owning this plugin lifetime with the LLM registry injected.
  * @param config - parsed plugin configuration.
  */
-export function apply(ctx: Context, config: Config): void {  const region = config.region
+export function apply(ctx: Context, config: Config): void {
+  const region = config.region
   const endpoints = endpointsFor(region)
+
+  // Offered as a harness authorization flow rather than only as a service
+  // method: the seam owns cancellation, one-attempt-per-key, and commit
+  // confirmation, and it is what the agent-facing API can drive. Injected
+  // rather than read directly, so a profile without the seam still loads.
+  ctx.inject(['authorization'], (child) => {
+    registerMinimaxAuthorization(child, config)
+  })
 
   const account = new MinimaxAccount(ctx, {
     endpoints,

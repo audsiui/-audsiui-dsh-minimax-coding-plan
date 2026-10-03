@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Context } from "@deepseek-ai/cordis";
 import LlmRuntime from "@deepseek-ai/dsh-llm";
+import AuthorizationService from "@deepseek-ai/dsh-authorization";
+import LocalCredentialProvider from "@deepseek-ai/dsh-credentials-local";
 import * as minimax from "./lib/index.js";
 
 const dir = await mkdtemp(join(tmpdir(), "minimax-apply-"));
@@ -20,6 +22,8 @@ const config = minimax.Config({ credentialsPath, openBrowser: false });
 
 const ctx = new Context();
 await ctx.plugin(LlmRuntime);
+await ctx.plugin(LocalCredentialProvider, { path: join(dir, "credentials.yaml") });
+await ctx.plugin(AuthorizationService);
 minimax.apply(ctx, config);
 const account = ctx.get("minimaxAccount");
 
@@ -50,6 +54,58 @@ check("inject survives loader unwrapping",
 check("apply survives loader unwrapping", typeof asLoaded.apply === "function");
 check("Config survives loader unwrapping", typeof asLoaded.Config === "function");
 check("name survives loader unwrapping", asLoaded.name === "llm-minimax-coding-plan");
+
+// The authorization seam is the supported way to obtain this grant: it owns
+// cancellation, one-attempt-per-key and commit confirmation. A flow that never
+// appears in ctx.authorization.list() is invisible to every surface and to the
+// agent-facing API, and the plugin silently has no way to sign in.
+// ctx.inject() runs its callback once the service is available, which is not
+// necessarily before apply() returns, so let the registration settle first.
+await new Promise(resolve => setTimeout(resolve, 0));
+const flows = ctx.authorization.list();
+const flow = flows.find(entry => entry.key === minimax.GRANT_KEY);
+check("authorization flow registered", flow !== undefined,
+  `keys=${JSON.stringify(flows.map(e => e.key))}`);check("flow key is the plugin's own scope",
+  minimax.GRANT_KEY === "llm-minimax-coding-plan/default", minimax.GRANT_KEY);
+check("flow labelled for a human surface", flow?.label === "MiniMax Coding Plan", flow?.label);
+check("flow offers a typed method",
+  Array.isArray(flow?.methods) && flow.methods.length > 0 && typeof flow.methods[0].id === "string",
+  JSON.stringify(flow?.methods));
+check("flow starts idle", flow?.inFlight === false);
+check("no second flow claims the key",
+  flows.filter(entry => entry.key === minimax.GRANT_KEY).length === 1);
+
+// The seam is the source of truth, so a grant committed there must be what the
+// provider hands out — otherwise signing in through the flow would appear to
+// succeed and the next request would still say ACCOUNT_SIGN_IN_REQUIRED.
+const committed = {
+  kind: "grant",
+  payload: {
+    schemaVersion: 1,
+    clientId: "mcode-public",
+    accessToken: "seam-token",
+    refreshToken: "seam-refresh",
+    expiresAtMs: Date.now() + 3_600_000,
+    scopes: ["agent.default"],
+    accountId: "acct-seam",
+    subject: "sub-seam",
+    region: "cn",
+  },
+};
+await ctx.credentials.modifyRecord(minimax.GRANT_KEY, () => Promise.resolve(committed));
+check("account reads the grant from the credential seam",
+  await account.resolveToken("https://agent.minimax.cn/mavis/api/v1/llm") === "seam-token");
+check("account is authenticated from the seam",
+  account.getState().status === "authenticated", account.getState().status);
+check("opaque payload is rejected when it is not ours",
+  minimax.parseGrantPayload({ schemaVersion: 1, clientId: "someone-else" }) === undefined);
+check("a payload missing the required scope is refused",
+  minimax.parseGrantPayload({ ...committed.payload, scopes: ["other"] }) === undefined);
+await account.signOut();
+check("sign-out clears the seam record",
+  (await ctx.credentials.readRecord(minimax.GRANT_KEY)) === undefined);
+check("sign-out leaves the account signed out",
+  account.getState().status === "signed-out");
 
 check("provider route registered",
   ctx.llm.listProviders().map(p => p.id).includes("minimax-coding-plan"));
