@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "lib/client-types",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "jsx": "react-jsx",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "types": ["node"]
+  },
+  /* The browser half plus the two files it shares with the Host. The generated
+     Remote contribution is the wire contract, not a host program: it carries
+     codecs the Host face never sees. */
+  "include": ["src/client", "src/generated", "src/types.ts"]
+}

@@ -20,12 +20,19 @@ import {
 } from '@deepseek-ai/dsh-llm-deepseek'
 import { MinimaxAccount } from './account.ts'
 import { registerMinimaxAuthorization } from './authorization.ts'
-import { MinimaxConsole } from './console.ts'
+import { MinimaxRemoteService } from './remote.ts'
 import { Config, endpointsFor } from './config.ts'
 
 export { Config, defaultCredentialsPath, endpointsFor } from './config.ts'
 export { registerMinimaxAuthorization } from './authorization.ts'
-export { MinimaxConsole, type ConsoleState, type MinimaxConsoleOptions } from './console.ts'
+export { MinimaxRemoteService, type MinimaxRemoteOptions } from './remote.ts'
+export type {
+  RemoteAccountStatus,
+  RemoteAccountView,
+  RemoteQuotaView,
+  RemoteQuotaWindow,
+  RemoteSignInFailure,
+} from './types.ts'
 export {
   fetchQuota,
   QuotaAuthError,
@@ -87,20 +94,14 @@ export function apply(ctx: Context, config: Config): void {
     openBrowser: config.openBrowser,
   })
 
-  // The harness GUI cannot host a surface for a third-party package: its
-  // client half reaches the host only through Remote contributions that dsh's
-  // own build pipeline generates for its own packages. So the sign-in button,
-  // the sign-out button, and the usage readout live on a loopback console this
-  // plugin serves. The authorization flow above stays registered as the
-  // in-harness path, and the console is the one that works everywhere.
-  const console_ = new MinimaxConsole(ctx, {
+  // The browser surface's only route to this process. `dsh-typert-loader`
+  // discovers the service through the generated `./typert` entry and the
+  // Gateway dispatches `POST /api/minimax/<method>` to it, validating every
+  // argument against the schema the generator derived from these signatures.
+  new MinimaxRemoteService(ctx, {
     account,
     endpoints,
     region,
-    port: config.consolePort,
-  })
-  ctx.inject([console_], () => {
-    void console_.start()
   })
 
   // `baseURL` and `models` stay volatile so a settings edit reaches the next

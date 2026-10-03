@@ -17,3 +17,6 @@ pnpm-lock.yaml
 .DS_Store
 .env
 .env.*
+
+.typert-workspace/
+

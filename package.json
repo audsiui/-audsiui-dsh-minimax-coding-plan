@@ -6,25 +6,46 @@
   "author": "audsiui",
   "type": "module",
   "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
   "exports": {
     ".": {
+      "types": "./lib/types/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./types": {
+      "types": "./lib/types/types.d.ts",
+      "default": "./lib/types.js"
+    },
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "default": "./lib/typert.remote-client.js"
+    },
+    "./client": "./lib/client.js",
     "./src/*": "./src/*",
     "./package.json": "./package.json"
   },
   "files": [
     "lib/",
     "src/",
+    "build/generate-typert.mjs",
     "cordis.patch.yml",
+    "tsconfig.base.json",
+    "tsconfig.host.json",
+    "tsconfig.client.json",
     "tsdown.config.ts",
     "README.md"
   ],
   "scripts": {
-    "//scripts": "The build hook is prepack, never prepare. pnpm 11 runs only prepublish/prepack/publish when it builds a git-hosted dependency, but it *decides* to build whenever a prepare script exists. A prepare-only package therefore trips the allowBuilds gate and then silently builds nothing, so lib/ is committed and prepack keeps `pnpm pack` and `npm publish` honest.",
-    "prepack": "tsdown",
-    "build": "tsdown",
-    "typecheck": "tsc --noEmit",
+    "//scripts": "The build hook is prepack, never prepare. pnpm 11 runs only prepublish/prepack/publish when it builds a git-hosted dependency, but it *decides* to build whenever a prepare script exists. A prepare-only package therefore trips the allowBuilds gate and then silently builds nothing, so lib/ is committed and prepack keeps `pnpm pack` and `npm publish` honest. build:lib runs the two tsc passes that generate-typecheck and emit; tsdown bundles from their output rather than from source, because the Typert artifacts are generated TypeScript and the browser half compiles against a different set of peer declarations.",
+    "prepack": "npm run build",
+    "generate:typert": "node build/generate-typert.mjs",
+    "build:lib": "tsc -p tsconfig.host.json && tsc -p tsconfig.client.json",
+    "build": "node build/clean.mjs && npm run build:lib && tsdown",
+    "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "smoke": "tsx smoke.ts",
     "signin": "node signin.mjs",
     "wiring": "node wiring.mjs",
@@ -36,34 +57,77 @@
       "patch": [
         "./cordis.patch.yml"
       ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-web-react"
+      ]
     }
   },
-  "//": "Peers are concrete semver ranges, never the workspace: protocol. dsh's plugin manager reads this manifest and rejects an incompatible DSH peer *before* pnpm runs, and a workspace: range is unresolvable outside a pnpm workspace — which is where a profile lives. schemastery is pinned to the range dsh-llm-deepseek itself depends on, because this package composes its schema objects and both sides must share one instance.",
+  "//": "Peers are concrete semver ranges, never the workspace: protocol. dsh's plugin manager reads this manifest and rejects an incompatible DSH peer *before* pnpm runs, and a workspace: range is unresolvable outside a pnpm workspace — which is where a profile lives. schemastery is pinned to the range dsh-llm-deepseek itself depends on, because this package composes its schema objects and both sides must share one instance. The browser-half peers are optional: a profile with no client modules still loads the Host provider, and declaring them as hard peers would make the plugin uninstallable on a headless profile.",
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.0 <5.0.0",
     "@deepseek-ai/cordis-plugin-loader": ">=1.0.0 <2.0.0",
+    "@deepseek-ai/dsh-api-remotes": ">=0.2.0-rc.2 <0.3.0",
     "@deepseek-ai/dsh-authorization": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-connection": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-runtime": ">=0.1.1-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-client-ui-primitives": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-web-react": ">=0.1.0-rc.7 <0.2.0",
     "@deepseek-ai/dsh-credentials": ">=0.2.0-rc.2 <0.3.0",
     "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0",
     "@deepseek-ai/dsh-llm-deepseek": ">=0.2.0-rc.2 <0.3.0",
-    "@deepseek-ai/schemastery": "~3.18.4"
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-rc.2 <0.3.0",
+    "@deepseek-ai/schemastery": "~3.18.4",
+    "react": ">=18.2.0 <19.0.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis-plugin-loader": {
-      "optional": true
-    }
+    "@deepseek-ai/cordis-plugin-loader": { "optional": true },
+    "@deepseek-ai/dsh-api-remotes": { "optional": true },
+    "@deepseek-ai/dsh-client-connection": { "optional": true },
+    "@deepseek-ai/dsh-client-locale": { "optional": true },
+    "@deepseek-ai/dsh-client-runtime": { "optional": true },
+    "@deepseek-ai/dsh-client-ui-primitives": { "optional": true },
+    "@deepseek-ai/dsh-client-ui-settings": { "optional": true },
+    "@deepseek-ai/dsh-client-ui-slots": { "optional": true },
+    "@deepseek-ai/dsh-client-web-react": { "optional": true },
+    "@deepseek-ai/dsh-typert-protocol": { "optional": true },
+    "react": { "optional": true }
   },
-  "//dev": "A dsh package that must share the host's instance is declared in both peerDependencies and devDependencies: the peer is what the running harness supplies, the dev copy is what typechecks and unit-tests here.",
+  "//dev": "A dsh package that must share the host's instance is declared in both peerDependencies and devDependencies: the peer is what the running harness supplies, the dev copy is what typechecks and unit-tests here. The browser-half packages are the same story — the shell provides them at runtime through the platform module table, and the dev copies are only here so `tsc` can see the slot and locale declarations. dsh-typert-generator is dev-only and never ships: it runs at build time to produce the committed artifacts under src/generated.",
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/cordis-plugin-loader": "^1.0.5",
+    "@deepseek-ai/dsh-api-remotes": "0.2.0-rc.2",
     "@deepseek-ai/dsh-authorization": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-connection": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-locale": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-web-react": "0.1.0-rc.7",
     "@deepseek-ai/dsh-credentials": "0.2.0-rc.2",
     "@deepseek-ai/dsh-credentials-local": "^0.2.0-rc.2",
     "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
     "@deepseek-ai/dsh-llm-deepseek": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-generator": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-typert-protocol": "0.2.0-rc.2",
     "@deepseek-ai/schemastery": "3.18.4",
     "@types/node": "^22.19.0",
+    "@types/react": "~18.3.1",
+    "react": "18.3.1",
     "tsdown": "^0.22.2",
     "tsx": "^4.20.0",
     "typescript": ">=5 <7"

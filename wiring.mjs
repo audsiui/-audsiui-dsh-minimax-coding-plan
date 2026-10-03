@@ -261,119 +261,81 @@ await minimax.fetchQuota({
 });
 check("the grant is sent as a bare `token` header", seenHeader === "quota-token", `${seenHeader}`);
 
-// ---------------------------------------------------------------------------
-// The local console.
+// The Remote service: the browser half's only route to this process.
 //
-// It can start a sign-in, so its refusal cases matter as much as its happy
-// path: loopback binding, a per-process path secret, and a loopback `Host`
-// check (which is what closes DNS rebinding).
-// ---------------------------------------------------------------------------
-
-const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-let stubState = { status: "signed-out" };
-let signInCalls = 0;
-let signOutCalls = 0;
-let stubToken;
-// A duck-typed account keeps this test hermetic: the real one would open a
+// What matters is that it projects rather than exposes. A surface must be able
+// to render state and drive the two buttons with no path by which a token
+// reaches the browser.
+let remoteState = { status: "signed-out" };
+let remoteToken;
+let remoteSignOuts = 0;
+let remoteSignIns = 0;
+// A duck-typed account keeps this hermetic: the real one would open a
 // device-code grant against the live account origin.
-const stubAccount = {
-  getState: () => stubState,
-  signIn: () => { signInCalls++; stubState = { status: "authorizing", userCode: "ABCD-1234", verificationUri: "https://example.test/verify", verificationUriComplete: undefined, expiresInSec: 300 }; return Promise.resolve(stubState); },
-  signOut: () => { signOutCalls++; stubState = { status: "signed-out" }; return Promise.resolve(stubState); },
-  resolveToken: (url) => (url === minimax.REGION_ENDPOINTS.cn.quotaOrigin ? Promise.resolve(stubToken) : Promise.resolve(undefined)),
+const remoteAccount = {
+  getState: () => remoteState,
+  signIn: () => {
+    remoteSignIns++;
+    remoteState = { status: "authorizing", userCode: "ABCD-1234", verificationUri: "https://example.test/verify", verificationUriComplete: "https://example.test/verify?code=ABCD-1234", expiresInSec: 300 };
+    return Promise.resolve(remoteState);
+  },
+  signOut: () => { remoteSignOuts++; remoteState = { status: "signed-out" }; return Promise.resolve(remoteState); },
+  resolveToken: (url) => (url === minimax.REGION_ENDPOINTS.cn.quotaOrigin && remoteToken !== undefined
+    ? Promise.resolve(remoteToken)
+    : Promise.resolve(undefined)),
 };
 
-const consoleCtx = new Context();
-const listener = new minimax.MinimaxConsole(consoleCtx, {
-  account: stubAccount,
+const remoteCtx = new Context();
+const remoteService = new minimax.MinimaxRemoteService(remoteCtx, {
+  account: remoteAccount,
   endpoints: minimax.REGION_ENDPOINTS.cn,
   region: "cn",
-  port: 0,
   fetchImpl: async () => jsonResponse({ base_resp: { status_code: 0 }, current_weekly_total_percent: "100", current_weekly_used_percent: "12" }),
 });
-const consoleUrl = await listener.start();
-const basePath = new URL(consoleUrl).pathname;
-const origin = new URL(consoleUrl).origin;
-check("console listens on loopback", consoleUrl.startsWith("http://127.0.0.1:"), consoleUrl);
-check("console path carries a per-process secret",
-  /^\/[A-Za-z0-9_-]{20,}\/$/u.test(basePath), basePath);
-check("calling start() twice reuses the same URL", await listener.start() === consoleUrl);
+check("Remote service binds its namespace", remoteService.typertRemote?.namespace === "minimax",
+  remoteService.typertRemote?.namespace);
+check("every @Remote method is reachable on the instance",
+  ["state", "signIn", "signOut", "quota"].every(m => typeof remoteService[m] === "function"));
 
-const get = (path, headers = {}) => fetch(origin + path, { headers, redirect: "manual" });
-const post = (path, headers = {}) => fetch(origin + path, { method: "POST", headers, redirect: "manual" });
+const wireOut = remoteService.state();
+check("signed-out state is the wire projection", wireOut.status === "signed-out" && wireOut.accountId === null);
+check("the wire projection never carries a token", !JSON.stringify(wireOut).includes("accessToken"));
 
-// `fetch` treats `Host` as a forbidden header name and silently drops it, so
-// the rebinding case needs a raw request. `rawGet` also returns the status of
-// a response the body of which nobody reads.
-const rawGet = (path, hostHeader) => new Promise((resolve, reject) => {
-  const req = httpRequest({ host: "127.0.0.1", port: Number(new URL(origin).port), path, method: "GET", headers: { host: hostHeader } },
-    res => { res.resume(); res.on("end", () => { resolve(res.statusCode); }); });
-  req.on("error", reject);
-  req.end();
-});
+// signIn returns as soon as the attempt is under way. The device grant takes as
+// long as the operator takes, so awaiting it would hold the call open for the
+// whole approval conversation.
+const authorizing = remoteService.signIn();
+check("signIn returns without waiting for approval", authorizing.status === "authorizing", authorizing.status);
+check("the projection carries the code and the complete page",
+  authorizing.userCode === "ABCD-1234" && String(authorizing.verificationUri).includes("ABCD-1234"));
+await new Promise(resolve => setTimeout(resolve, 0));
+check("signIn started exactly one attempt", remoteSignIns === 1, String(remoteSignIns));
 
-check("the page is served at the tokenised path",
-  (await get(basePath)).status === 200, "");
-const page = await (await get(basePath)).text();
-check("the page carries the sign-in and sign-out controls",
-  page.includes('id="signin"') && page.includes('id="signout"'));
-check("the page offers both usage windows",
-  page.includes('id="tab-interval"') && page.includes('id="tab-weekly"'));
-check("the page leaks no grant material", !page.includes("test-access-token") && !page.includes("seam-token"));
+remoteState = { status: "authenticated", accountId: "acct-remote", expiresAtMs: 1700003600000 };
+remoteToken = "remote-grant";
+const authed = remoteService.state();
+check("authenticated state carries the account id", authed.accountId === "acct-remote", authed.accountId);
+check("authenticated state drops the device code", authed.userCode === null);
 
-// The secret is the whole access control: without it there is no entry point.
-check("an un-tokened path is a 404", (await get("/api/state")).status === 404, "");
-check("a guessed secret is a 404",
-  (await get("/" + "a".repeat(32) + "/api/state")).status === 404, "");
+const grant = await remoteService.quota();
+check("quota reads through the Remote", grant.windows.find(w => w.id === "weekly")?.usedPercent === 12,
+  JSON.stringify(grant.windows.map(w => [w.id, w.usedPercent])));
+check("quota never returns the grant", !JSON.stringify(grant).includes("remote-grant"));
+check("a successful quota read is not flagged auth-expired", grant.authExpired === false && grant.error === null);
 
-// DNS rebinding: the name resolves to 127.0.0.1 but the header is not loopback.
-check("a non-loopback Host is refused",
-  await rawGet(basePath + "api/state", "attacker.test") === 421, "");
-check("a loopback name is accepted",
-  await rawGet(basePath + "api/state", "localhost:" + new URL(origin).port) === 200, "");
-check("a loopback Host with the port is accepted",
-  (await get(basePath + "api/state", { host: "127.0.0.1:" + new URL(origin).port })).status === 200, "");
-check("a wrong method is a 405",
-  (await post(basePath + "api/state")).status === 405, "");
+// A rejected grant travels as a flag rather than a thrown RemoteError: the
+// surface has to be able to offer sign-in, not report a generic failure.
+remoteToken = undefined;
+const unresolvable = await remoteService.quota();
+check("an unresolvable grant is reported as auth-expired", unresolvable.authExpired === true, unresolvable.error);
 
-const signedOut = await (await get(basePath + "api/state")).json();
-check("state starts signed-out", signedOut.status === "signed-out", signedOut.status);
-check("state carries no credential fields",
-  signedOut.accessToken === undefined && signedOut.refreshToken === undefined);
-check("state reports the region", signedOut.region === "cn", signedOut.region);
-
-await post(basePath + "api/sign-in");
-await wait(0);
-check("the sign-in button starts one attempt", signInCalls === 1, `${signInCalls}`);
-const authorizing = await (await get(basePath + "api/state")).json();
-check("state reports the device code while authorizing",
-  authorizing.status === "authorizing" && authorizing.userCode === "ABCD-1234", authorizing.userCode);
-
-stubState = { status: "authenticated", accountId: "acct-console", expiresAtMs: 1_700_003_600_000 };
-stubToken = "console-grant";
-const signedIn = await (await get(basePath + "api/state")).json();
-check("an authenticated state carries the account id", signedIn.accountId === "acct-console", signedIn.accountId);
-check("usage rides along with the state",
-  signedIn.quota?.windows.find(w => w.id === "weekly")?.usedPercent === 12,
-  JSON.stringify(signedIn.quota?.windows?.map(w => [w.id, w.usedPercent])));
-check("the usage read never carries the grant", !JSON.stringify(signedIn).includes("console-grant"));
-
-stubToken = undefined;
-const noGrant = await (await get(basePath + "api/state")).json();
-check("a signed-in account with no usable grant omits usage",
-  noGrant.quota === undefined && noGrant.status === "authenticated");
-
-await post(basePath + "api/sign-out");
-check("the sign-out button signs out", signOutCalls === 1, `${signOutCalls}`);
-check("state is signed-out again",
-  (await (await get(basePath + "api/state")).json()).status === "signed-out");
-
-await listener.stop();
-let afterStop;
-try { afterStop = (await rawGet(basePath + "api/state", "127.0.0.1")).toString(); }
-catch (e) { afterStop = e.code ?? e.name; }
-check("stopping the console releases the socket",
-  afterStop === "ECONNREFUSED" || afterStop === "ECONNRESET", `${afterStop}`);
+remoteState = { status: "signed-out" };
+const signedOut = await remoteService.signOut();
+check("signOut clears and reports signed-out", signedOut.status === "signed-out" && remoteSignOuts === 1);
+const whileOut = await remoteService.quota();
+check("quota short-circuits while signed out",
+  whileOut.windows.length === 0 && whileOut.authExpired === false);
+await remoteCtx.stop?.();
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

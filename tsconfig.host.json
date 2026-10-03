@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["src"],
+  /* The browser half has its own face: it compiles to CommonJS against a
+     different set of peer declarations, and letting it into the host program
+     would drag React and the client slot types into the Remote analysis. */
+  "exclude": ["src/client"]
+}

@@ -59,14 +59,6 @@ export interface Config extends Omit<ProtocolConfig, 'baseURL' | 'models'> {
   credentialsPath: string
   /** Open the verification page automatically during sign-in. Read once at load. */
   openBrowser: boolean
-  /**
-   * Port for the local console, or `0` for an ephemeral one (default).
-   *
-   * The console is how the operator gets a sign-in button and the usage
-   * readout, so it starts with the plugin; the port stays ephemeral unless a
-   * fixed one is asked for, which keeps a second host from colliding with it.
-   */
-  consolePort: number
 }
 
 /** Schemastery schema, reusing every Messages protocol field. */
@@ -81,7 +73,6 @@ export const Config = z.object({
   region: z.union(['cn', 'en'] as const).default('cn'),
   credentialsPath: z.string().default(defaultCredentialsPath()),
   openBrowser: z.boolean().default(true),
-  consolePort: z.number().min(0).max(65535).default(0),
 })
 
 /** Region origins for one configured region. */

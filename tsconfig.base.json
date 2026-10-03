@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2024"],
+    "types": ["node"],
+
+    /* Source files import each other with explicit `.ts` extensions, the same
+       convention the harness repository uses. Both faces emit real JavaScript
+       (tsdown bundles from that output), so `rewriteRelativeImportExtensions`
+       is what makes the extension legal in an emitting program. */
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+
+    /* Mirrors the strictness of the harness repository's `tsconfig.base.json`
+       so a change that would fail there also fails here. */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}
