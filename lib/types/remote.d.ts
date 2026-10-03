@@ -9,7 +9,10 @@
  * parameters, and `signal` last where cancellation is wanted.
  *
  * The browser half never receives a token. `state()` projects the account onto
- * display fields, and `quota()` returns percentages.
+ * display fields, and `quota()` and `plan()` hand back what their readers
+ * already parsed: both readers produce the wire shape directly, so this module
+ * projects only the account's discriminated state and otherwise decides which
+ * origin to read and how a failure is worded.
  */
 import type { Context } from '@deepseek-ai/cordis';
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
@@ -98,7 +101,10 @@ export declare class MinimaxRemoteService extends TypertRemoteService {
      * A read failure is reported in the returned record rather than thrown: the
      * surface must be able to distinguish "no grant yet" from "the service is
      * unreachable" and offer the right next step, and a thrown RemoteError would
-     * collapse both into one failure branch.
+     * collapse both into one failure branch. This is the one read that keeps a
+     * separate `authExpired` flag; `plan` does not need one, and giving it one
+     * would let a plan-only 401 drive the page into a re-sign-in that the usage
+     * read would contradict.
      *
      * @returns the windows, or the reason there are none.
      */
@@ -109,10 +115,10 @@ export declare class MinimaxRemoteService extends TypertRemoteService {
      * Kept separate from {@link quota} rather than folded into it, so the two
      * reads fail independently: a plan outage must not blank a usage figure the
      * service already answered with, and a usage outage must not hide the tier
-     * name. A failure is reported in the returned record for the same reason
-     * `quota` does — the surface has to tell "no grant yet" from "unreachable".
+     * name. `fetchPlan` reports its own failures in the record it returns, so
+     * this method has nothing left to do but hand it across.
      *
-     * @returns the account and plan, or the reason there are none.
+     * @returns the account and plan, with any failure's reason in `error`.
      */
     plan(): Promise<RemotePlanView>;
 }

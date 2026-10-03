@@ -99,11 +99,18 @@ function modelLabel(model: string, t: PageProps['t']): string {
 }
 
 /**
- * Clamp a ratio into the 0-100 a bar can actually draw.
- * @returns the share of the window's own total that is consumed.
+ * The share of a window's own allowance that is consumed, for the bar to draw.
+ *
+ * The window names its own currency, so this is asked once and the surface
+ * never re-derives which of the two figures is the real one.
+ * @param win - the window to measure.
+ * @returns 0-100, bounded.
  */
-function ratio(used: number, total: number): number {
-  if (!Number.isFinite(total) || total <= 0) return 0
+function spentPercent(win: RemoteQuotaWindow): number {
+  const [used, total] = win.meter === 'count'
+    ? [win.usedCount, win.totalCount]
+    : [win.usedPercent, win.totalPercent]
+  if (used === null || total === null || !Number.isFinite(total) || total <= 0) return 0
   return Math.max(0, Math.min(100, Math.round(used / total * 100)))
 }
 
@@ -122,19 +129,6 @@ function levelOf(spent: number): 'high' | 'spent' | undefined {
   return undefined
 }
 
-/**
- * The currency one window is metered in.
- *
- * A window reports a real request count, a percentage pair, or both. `video`
- * reports both on the same entry; `general` reports only percentages, because
- * the service sends `-1` for every count there rather than omitting them. So the
- * count wins where there is one — it is the figure that actually decrements —
- * and the percentage is the fallback, not the alternative.
- */
-function meterKind(win: RemoteQuotaWindow): 'count' | 'percent' {
-  return win.totalCount !== null && win.totalCount > 0 ? 'count' : 'percent'
-}
-
 /** Render one model's allowance window as a labelled bar. */
 function UsageBar(props: { win: RemoteQuotaWindow; label: string; t: PageProps['t'] }): ReactElement {
   const { win, label, t } = props
@@ -151,15 +145,11 @@ function UsageBar(props: { win: RemoteQuotaWindow; label: string; t: PageProps['
     )
   }
 
-  const byCount = meterKind(win) === 'count'
+  const byCount = win.meter === 'count'
   // An unmetered window has nothing to draw a bar against, so it is stated and
-  // not graphed. The percentages are still reported below it, because the
-  // service keeps sending them and they are still true.
-  const spent = win.unlimited
-    ? 0
-    : byCount
-      ? ratio(win.usedCount ?? 0, win.totalCount ?? 1)
-      : ratio(win.usedPercent, win.totalPercent)
+  // not graphed. The figures are still reported below it, because the service
+  // keeps sending them and they are still true.
+  const spent = win.unlimited ? 0 : spentPercent(win)
 
   const value = win.unlimited
     ? t('usage.unlimited')

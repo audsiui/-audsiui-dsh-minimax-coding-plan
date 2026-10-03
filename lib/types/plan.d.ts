@@ -2,80 +2,62 @@
  * Who is signed in, and what they bought.
  *
  * Two agent-origin reads, taken from MiniMax's own desktop client rather than
- * guessed: `GET /v1/api/user/info` for the account, and
- * `POST /matrix/api/v1/commerce/get_membership_info` for the plan. Both accept
- * the same `Authorization: Bearer` grant the quota read uses, and neither
- * requires a request signature — MiniMax's renderer computes `x-timestamp`,
- * `x-signature` and `yy`, but its Electron main process strips the `token` and
- * `authorization` headers before forwarding, so those signatures cover a body
- * the backend does not check. Omitting them was verified against the live
- * endpoints, not inferred.
+ * guessed at: `GET /v1/api/user/info` for the account, and
+ * `POST /matrix/api/v1/commerce/get_membership_info` for the plan. `read.ts`
+ * owns the request and the two error envelopes; this module owns the mapping
+ * from those two bodies onto one record.
  *
- * The two are read independently and neither can blank the other. A plan read
- * that fails still leaves the account name, and vice versa; the surface shows
- * whichever half arrived and says nothing about the other rather than implying
- * it is absent.
+ * ## One failure mode, on purpose
+ *
+ * `fetchPlan` never throws. Every outcome — including both reads failing — comes
+ * back as a {@link RemotePlanView} with the reason in `error`. That is not
+ * uniformity for its own sake: the surface keys "offer a re-sign-in" off the
+ * *usage* read's `authExpired` flag, so a plan failure has no distinct action
+ * behind it and a throw would buy nothing but a branch the caller has to know
+ * about. It is also the same shape the usage read already presents, so the two
+ * reads can be rendered from one code path.
+ *
+ * ## The two reads fail independently
+ *
+ * Both are attempted even when the first one fails, and a failure in one is
+ * reported without discarding what the other already answered. An earlier
+ * version documented that and then threw on any failure at all, which a test
+ * caught: a plan outage blanked the account name and an account outage blanked
+ * the tier name — exactly the coupling the split was meant to remove.
  *
  * ## What is deliberately not read
  *
  * `opcredit_balance` and `op_credit_summary.total_remaining_amount` disagree on
  * the same account: the balance reads `2912` while the summary reads
  * `"9402.216"`, and the summary's own breakdown shows why — `2912.216`
- * purchased plus `6490` free. The service is reporting a purchased balance and
- * a total under two field names, and nothing in the payload says which one a
+ * purchased plus `6490` free. The service is reporting a purchased balance and a
+ * total under two field names, and nothing in the payload says which one a
  * caller is supposed to display. Rather than pick one and present it as "the"
- * balance, neither is carried here. That is a gap in what this module reports,
- * and it is left visible rather than papered over with a guess.
+ * balance, neither is carried. That is a gap in what this module reports, and it
+ * is left visible rather than papered over with a guess.
  */
-import type { RegionEndpoints } from './constants.ts';
-/** Who the grant belongs to, and what plan it is on. */
-export interface PlanSnapshot {
-    /** Display name the account service reported. */
-    readonly accountName: string | undefined;
-    /** Stable account id. The OAuth grant carries none — its access token is an
-     *  opaque string, not a JWT — so this is the only source of an account id. */
-    readonly accountId: string | undefined;
-    /** Plan tier name, e.g. `Max`. Empty on the wire is reported as absent. */
-    readonly tier: string | undefined;
-    /** When the plan itself lapses, in epoch milliseconds. */
-    readonly planExpiresAtMs: number | undefined;
-    /** Whether the service considers this account to be on a token plan. */
-    readonly hasTokenPlan: boolean | undefined;
-    /** The service's own subscription kind, e.g. `token_plan`. */
-    readonly subscriptionType: string | undefined;
-    /** Why a read produced no values, when one did. */
-    readonly error: string | undefined;
+import type { ReadClient } from './read.ts';
+import type { RemotePlanView } from './types.ts';
+/** Collaborators. The origin and grant, narrowed from the region's four. */
+export interface PlanClientOptions extends ReadClient {
 }
-/** Raised when the service answers but the grant is not usable. */
-export declare class PlanAuthError extends Error {
-    constructor(message: string);
-}
-/** Raised when a request never reached the service. */
-export declare class PlanNetworkError extends Error {
-    constructor(message: string, options?: {
-        cause?: unknown;
-    });
-}
-/** Collaborators, so the transport is injectable in tests. */
-export interface PlanClientOptions {
-    /** Access token for the agent origin, already refreshed by the caller. */
-    readonly token: string;
-    /** Region origins; only `agentOrigin` is read. */
-    readonly endpoints: RegionEndpoints;
-    readonly fetchImpl?: typeof fetch | undefined;
-}
+/**
+ * A plan record with nothing in it and a reason why.
+ *
+ * Exported because the one caller outside this module — the Remote's
+ * "no grant to read with" branch — needs the same shape `fetchPlan` returns,
+ * and building it twice is how the two drift apart.
+ *
+ * @param error - the reason, already worded for the surface.
+ * @returns every field absent except the reason.
+ */
+export declare function failedPlan(error: string): RemotePlanView;
 /**
  * Read the account identity and the plan it is on.
  *
- * A read that fails alone does not fail this: the surviving half is returned
- * with the reason in {@link PlanSnapshot.error}, so a plan outage thins the card
- * instead of emptying it and a usage outage cannot hide the tier name. Only
- * when *both* reads fail is there nothing left to show, and that throws.
- *
- * @param options - the grant to read with and the origins to read from.
- * @returns whatever the two reads produced, with the first failure's reason.
- * @throws {PlanAuthError} when the service rejects the grant on both reads.
- * @throws {PlanNetworkError} when neither read could be completed.
+ * @param options - the origin to read from, the grant, and the transport.
+ * @returns whatever the two reads produced, with any failure's reason in
+ *   `error`. Never throws.
  */
-export declare function fetchPlan(options: PlanClientOptions): Promise<PlanSnapshot>;
+export declare function fetchPlan(options: PlanClientOptions): Promise<RemotePlanView>;
 //# sourceMappingURL=plan.d.ts.map

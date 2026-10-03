@@ -1,17 +1,10 @@
 /**
  * Coding Plan quota reads.
  *
- * `remains_percent` is a plain authenticated GET on the open platform. It
- * carries no request signature, and every failure comes back inside `base_resp`
- * rather than as an HTTP status class — a rejected credential still answers
- * HTTP 200.
- *
- * The credential goes in `Authorization: Bearer <token>`. This was wrong once:
- * an earlier version sent it as a bare `token` header, on the strength of a note
- * claiming this service checks that one instead. Verified against the live
- * endpoint with a real grant — a bare `token` header answers
- * `1016 invalid api key`, and the identical token answers `status_code: 0`
- * under the bearer header. Nothing else about the request differs.
+ * `remains_percent` is a plain authenticated read on the open platform, and
+ * `read.ts` owns how the request is made and how a rejection is recognised. This
+ * module owns one thing: turning `model_remains` into windows a surface can
+ * draw without re-deriving anything.
  *
  * The body is `{ model_remains: [...], base_resp: {...} }`, one entry per model
  * family the plan meters — a real account returns `general` and `video`. Each
@@ -20,93 +13,94 @@
  * this module reports those two per entry and leaves the absence alone rather
  * than inventing a monthly figure.
  *
- * Percentages arrive as strings with a trailing `%`. The *total* is a
- * percentage too, and it is not bounded by 100 — a real weekly window reported
- * `150%`. Clamping it would have turned a 150% allowance into a 100% one, so
- * totals are passed through and only the rendered ratio is bounded.
+ * ## The window field map
  *
- * A window is metered in one of two currencies and the two are not
- * interchangeable. `general` reports `-1` for every `*_count` and meters purely
- * in percentages; `video` reports real counts and meters in them. MiniMax's own
- * client picks the currency the same way — it reads the percentage pair for the
- * entry named `general` and the count triple for the `video` entry — so both are
- * carried here and the surface decides which to draw.
+ * The two windows differ only in a prefix — `current_interval_*` against
+ * `current_weekly_*` — plus which of the three timing fields each one uses. That
+ * mapping is the whole reason this module exists, and it is data rather than
+ * code: it is one table, each row naming the eight fields of its window, and
+ * {@link readWindow} is the one loop that knows how to consume a row. Written
+ * the other way round it was an eleven-parameter function that a caller had to
+ * call correctly, by memory, with eight field names in the right order — the
+ * interface was as complex as the implementation, which is the definition of a
+ * module that is not earning its keep.
  *
- * The wire's own `*_status` is carried verbatim. A status of `3` means the
- * window is not metered at all, which is what MiniMax's client maps to its
- * "unlimited" flag; that mapping was dropped from this module once on the
- * strength of a guess that a `-1` count implied it, which is a different field
- * answering a different question. It is restored, keyed on the status the
- * service actually sends.
+ * ## Two currencies, one window
+ *
+ * A window is metered in requests or as a share of a percentage, and the service
+ * reports `-1` for the counts when it means the latter: a real account sends
+ * `-1` on `general` alongside a live `6% / 150%` weekly allowance, and real
+ * counts on `video` alongside `0% / 100%`. So the counts are not a fallback for
+ * a missing percentage, and the percentage is not a fallback for a missing
+ * count. The window says which one it is in {@link RemoteQuotaWindow.meter},
+ * decided here from what actually arrived, and the surface draws that.
+ *
+ * ## Two claims that were removed
+ *
+ * `*_status === 3` means the window is not metered, which is what MiniMax's own
+ * client maps to its "unlimited" flag. That mapping was dropped from this module
+ * once on the strength of a guess that a `-1` count implied it — a different
+ * field answering a different question — and is restored, keyed on the status
+ * the service sends, per window rather than per model.
+ *
+ * The counts themselves were dropped for a while on the same kind of reasoning,
+ * which cost the `video` entry its real 21-request weekly budget and drew it as
+ * `0% / 100%` instead.
  */
-import type { RegionEndpoints } from './constants.ts'
+import type { ReadClient } from './read.ts'
+import { readJson, ReadError } from './read.ts'
+import type { QuotaMeter, RemoteQuotaWindow, RemoteQuotaWindowId } from './types.ts'
 
-/** Base response every endpoint on this service returns. */
-interface BaseResp {
-  readonly status_code?: number
-  readonly status_msg?: string
+/**
+ * The fields that make up one allowance window.
+ *
+ * Every row names the same eight things, and the only variation between rows is
+ * the prefix and the timing field — which is why this is a table.
+ */
+interface WindowFields {
+  /** Windowed allowance total, e.g. `current_weekly_total_percent`. */
+  readonly totalPercent: string
+  /** Consumed share of that total. */
+  readonly usedPercent: string
+  /** The window's own status. */
+  readonly status: string
+  /** When the window resets, shared between both windows. */
+  readonly resetAt: string
+  /** How long is left in it, shared between both windows. */
+  readonly remains: string
+  /** Request-count allowance total, or `-1` when metered in percentages. */
+  readonly totalCount: string
+  /** Requests consumed from that total. */
+  readonly usedCount: string
+  /** Requests left, as the service counts them. */
+  readonly remainsCount: string
 }
 
-/** One allowance window, normalised away from the wire's percent strings. */
-export interface QuotaWindow {
-  /** `model_name` the server grouped this window under. */
-  readonly model: string
-  /** Which window: `interval` or `weekly`. */
-  readonly window: 'interval' | 'weekly'
-  /** Allowance as a percentage. Not bounded by 100; a 150% plan is real. */
-  readonly totalPercent: number
-  /** Consumed share of {@link totalPercent}, never negative. */
-  readonly usedPercent: number
-  /** Epoch milliseconds the window resets, when the server reports it. */
-  readonly resetAtMs: number | undefined
-  /** Milliseconds left in the window, as the server counts them. */
-  readonly remainsMs: number | undefined
-  /**
-   * Request-count allowance, when the window is metered in requests.
-   *
-   * The server sends `-1` for a window that is metered in percentages instead,
-   * and a real account does exactly that on its `general` entry while reporting
-   * a live `6% / 150%` weekly allowance. `-1` therefore means "this window has
-   * no request-count quota", not "this window is unmetered" — the percentages
-   * are the real figure there. `undefined` is that case; a number is a real
-   * count. MiniMax's own client reads these to draw the `video` entry, so they
-   * are not dropped.
-   */
-  readonly totalCount: number | undefined
-  /** Requests consumed from {@link totalCount}, when it is a real count. */
-  readonly usedCount: number | undefined
-  /** Requests left, as the server counts them, when it counts at all. */
-  readonly remainsCount: number | undefined
-  /**
-   * Whether the response carried this window's own fields.
-   *
-   * The `*_count` fields being `-1` does **not** mean the window is unmetered.
-   * That reading was tried and is wrong: a real account reports `-1` counts on
-   * the `general` entry and still reports a live `6% / 150%` weekly allowance,
-   * which the operator's own client displays for that same entry. `-1` means
-   * there is no request-count quota attached — the allowance is expressed purely
-   * as a share of a percentage — and the percentages are the real figure. A
-   * count-based quota is only one of the two ways this service meters.
-   */
-  readonly present: boolean
-  /** The server's own window status, verbatim. */
-  readonly status: number | undefined
-  /**
-   * Whether the service reports this window as not metered.
-   *
-   * `3` is the status MiniMax's client maps to its "unlimited" flag, and the
-   * mapping is taken from its parser rather than inferred: a real account
-   * reports `1` on every window, so only a `3` here is evidence the service
-   * considers a window unmetered, and nothing else is guessed at.
-   */
-  readonly unlimited: boolean
-}
-
-/** Everything the console renders for one account. */
-export interface QuotaSnapshot {
-  readonly windows: readonly QuotaWindow[]
-  /** Fetched-at clock, so the console can say how stale the numbers are. */
-  readonly fetchedAtMs: number
+/** One row per window the service meters. There is no third. */
+const WINDOW_FIELDS: Readonly<Record<RemoteQuotaWindowId, WindowFields>> = {
+  interval: {
+    totalPercent: 'current_interval_total_percent',
+    usedPercent: 'current_interval_used_percent',
+    status: 'current_interval_status',
+    // The interval window ends at `end_time` and the weekly one at
+    // `weekly_end_time`; `start_time`/`weekly_start_time` are the same figures
+    // backwards and are not read.
+    resetAt: 'end_time',
+    remains: 'remains_time',
+    totalCount: 'current_interval_total_count',
+    usedCount: 'current_interval_used_count',
+    remainsCount: 'current_interval_remains_count',
+  },
+  weekly: {
+    totalPercent: 'current_weekly_total_percent',
+    usedPercent: 'current_weekly_used_percent',
+    status: 'current_weekly_status',
+    resetAt: 'weekly_end_time',
+    remains: 'weekly_remains_time',
+    totalCount: 'current_weekly_total_count',
+    usedCount: 'current_weekly_used_count',
+    remainsCount: 'current_weekly_remains_count',
+  },
 }
 
 /** Raised when the service answers but the grant is not usable. */
@@ -135,12 +129,24 @@ export class QuotaNetworkError extends Error {
  * `1016 invalid api key` for all four. There is no such distinction to make, and
  * the raw code travels in the message either way, so an unrecognised code still
  * reports what the server actually said.
+ *
+ * This belongs to the quota service and not to `read.ts`, which sees the same
+ * shape of failure on the agent origin where it means something else.
  */
-const AUTH_STATUS_CODES = new Set([1016])
+const AUTH_STATUS_CODES: ReadonlySet<number> = new Set([1016])
 
 /**
- * The wire sends percentages as strings with a trailing `%`, and omits the
- * field entirely for a window the plan does not meter.
+ * The status value MiniMax's client reads as "this window is not metered".
+ *
+ * Taken from its parser, which tests `3 === current_interval_status` for the
+ * interval window and the matching `current_weekly_status` for the weekly one. A
+ * real account reports `1` throughout, so this is the only value with evidence
+ * behind it and nothing else is guessed at.
+ */
+const UNLIMITED_STATUS = 3
+
+/**
+ * The wire sends percentages as strings with a trailing `%`.
  * @param value - the raw field, of unknown shape.
  * @returns the number, or undefined when the field is absent or unusable.
  */
@@ -153,164 +159,102 @@ function parsePercent(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined
 }
 
-/** Allowance total. A plan metered above 100% keeps that number. */
-function toTotal(value: unknown): number {
-  const parsed = parsePercent(value)
-  return parsed !== undefined && parsed > 0 ? parsed : 100
-}
-
-/** Consumed share, clamped at zero and treated as absent-but-zero. */
-function toUsed(value: unknown): number {
-  const parsed = parsePercent(value)
-  return parsed === undefined ? 0 : Math.max(0, parsed)
-}
-
 /** Parse an epoch instant that may arrive in seconds or milliseconds. */
-function toEpochMs(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    return value > 1e11 ? value : value * 1000
-  }
-  return undefined
+function parseEpochMs(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return null
+  return value > 1e11 ? value : value * 1000
 }
 
 /** Parse a duration in milliseconds, dropping the `-1` the server uses for "none". */
-function toDurationMs(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value
-  return undefined
-}
-
-/** Parse a small integer field such as `*_status`. */
-function toStatus(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+function parseDurationMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
 /**
- * Parse a request count, treating the service's `-1` as "not counted here".
+ * Parse a request count, treating the service's `-1` as "not metered in requests".
  * @param value - the raw `*_count` field.
- * @returns the count, or undefined when the window meters percentages instead.
+ * @returns the count, or null when this window meters percentages instead.
  */
-function toCount(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+function parseCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }
 
-/**
- * The status value MiniMax's client reads as "this window is not metered".
- *
- * Taken from its parser (`out/_next/static/chunks/15233-*.js`), which tests
- * `3 === current_interval_status` for the interval window and the matching
- * `current_weekly_status` for the weekly one. A real account reports `1`
- * throughout, so this is the only value with evidence behind it.
- */
-const UNLIMITED_STATUS = 3
-
-/**
- * Whether the response carried this window's own fields.
- *
- * The `*_count` fields being `-1` does **not** mean the window is unmetered.
- * That reading was tried and is wrong: a real account reports `-1` counts on the
- * `general` entry and still reports a live `6% / 150%` weekly allowance, which
- * the operator's own client displays for that same entry. `-1` means there is no
- * request-count quota attached — the allowance is expressed purely as a share of
- * a percentage — and the percentages are the real figure. A count-based quota is
- * only one of the two ways this service meters.
- */
-function isPresent(entry: Record<string, unknown>, ...fields: string[]): boolean {
-  return fields.some(field => entry[field] !== undefined)
-}
-
-/** Build one window from the paired total/used/status fields of a model entry. */
+/** Build one window from the fields its table row names. */
 function readWindow(
   entry: Record<string, unknown>,
   model: string,
-  window: 'interval' | 'weekly',
-  totalField: string,
-  usedField: string,
-  statusField: string,
-  resetField: string,
-  remainsField: string,
-  totalCountField: string,
-  usedCountField: string,
-  remainsCountField: string,
-): QuotaWindow {
-  const status = toStatus(entry[statusField])
+  window: RemoteQuotaWindowId,
+  fields: WindowFields,
+): RemoteQuotaWindow {
+  const totalPercent = parsePercent(entry[fields.totalPercent])
+  const totalCount = parseCount(entry[fields.totalCount])
+  const status = typeof entry[fields.status] === 'number' ? (entry[fields.status] as number) : null
+
   return {
     model,
     window,
-    totalPercent: toTotal(entry[totalField]),
-    usedPercent: toUsed(entry[usedField]),
-    resetAtMs: toEpochMs(entry[resetField]),
-    remainsMs: toDurationMs(entry[remainsField]),
-    totalCount: toCount(entry[totalCountField]),
-    usedCount: toCount(entry[usedCountField]),
-    remainsCount: toCount(entry[remainsCountField]),
-    // Presence is decided by the window's own percentage fields, which are the
-    // figures the surface draws. The `*_count` fields are not consulted: see
-    // QuotaWindow.present for why -1 there does not mean "unmetered".
-    present: isPresent(entry, totalField, usedField, statusField, resetField),
+    // A total is never zero or missing on a window that is metered at all, and
+    // 100 is the service's own fallback for a window it does not meter above.
+    // A 150% allowance is real and is not clamped.
+    totalPercent: totalPercent !== undefined && totalPercent > 0 ? totalPercent : 100,
+    usedPercent: Math.max(0, parsePercent(entry[fields.usedPercent]) ?? 0),
+    resetAtMs: parseEpochMs(entry[fields.resetAt]),
+    remainsMs: parseDurationMs(entry[fields.remains]),
+    totalCount,
+    usedCount: parseCount(entry[fields.usedCount]),
+    remainsCount: parseCount(entry[fields.remainsCount]),
+    // Counts win where the service sent them: it is the figure that decrements.
+    // The percentage pair is still carried either way, because the service keeps
+    // sending it and it is still true.
+    meter: (totalCount !== null && totalCount > 0 ? 'count' : 'percent') satisfies QuotaMeter,
+    // Presence is decided by the window's own percentage fields, which every
+    // metered window reports. The `*_count` fields are not consulted: a `-1`
+    // there means no request-count quota is attached, not that the window goes
+    // unmetered, and a real account reports `-1` counts alongside 6% / 150%.
+    present: entry[fields.totalPercent] !== undefined
+      || entry[fields.usedPercent] !== undefined
+      || entry[fields.status] !== undefined
+      || entry[fields.resetAt] !== undefined,
     status,
     unlimited: status === UNLIMITED_STATUS,
   }
 }
 
-/** Collaborators, so the transport and clock are injectable in tests. */
-export interface QuotaClientOptions {
-  /** Access token for the open platform, already refreshed by the caller. */
-  readonly token: string
-  /** Region origins; only `quotaOrigin` is used. */
-  readonly endpoints: RegionEndpoints
-  /** Injectable transport and clock. */
-  readonly fetchImpl?: typeof fetch | undefined
-  readonly now?: (() => number) | undefined
-}
+/** Collaborators. The origin and grant, narrowed from the region's four. */
+export type QuotaClientOptions = ReadClient
 
 /**
  * Read the current allowance windows for every model the plan meters.
  *
- * @param options - the grant to read with and the origins to read from.
+ * @param options - the origin to read from, the grant, and the transport.
  * @returns the windows, grouped by the model each was reported under.
  * @throws {QuotaAuthError} when the service rejects the grant.
  * @throws {QuotaNetworkError} when the request could not be completed.
  */
-export async function fetchQuota(options: QuotaClientOptions): Promise<QuotaSnapshot> {
-  const doFetch = options.fetchImpl ?? fetch
-  const now = (options.now ?? Date.now)()
-  const url = `${options.endpoints.quotaOrigin}/backend/account/token_plan/remains_percent`
-
-  let payload: unknown
+export async function fetchQuota(options: QuotaClientOptions): Promise<RemoteQuotaWindow[]> {
+  let body: Record<string, unknown>
   try {
-    const response = await doFetch(url, {
-      method: 'GET',
-      headers: {
-        authorization: `Bearer ${options.token}`,
-        accept: 'application/json',
-      },
+    body = await readJson(options, {
+      path: '/backend/account/token_plan/remains_percent',
+      label: 'the quota service',
     })
-    const text = await response.text()
-    try {
-      payload = JSON.parse(text)
-    }
-    catch {
-      // A non-JSON body means an edge interstitial or a login redirect, not a
-      // business answer. Report it as a network problem so the console shows
-      // something retryable rather than a misleading "no quota".
-      throw new QuotaNetworkError(`quota service returned a non-JSON body (HTTP ${response.status})`)
-    }
   }
   catch (error) {
-    if (error instanceof QuotaNetworkError) throw error
-    throw new QuotaNetworkError(`could not reach the MiniMax quota service: ${String(error)}`, { cause: error })
-  }
-
-  if (payload === null || typeof payload !== 'object') {
-    throw new QuotaNetworkError('quota service returned a body that is not an object')
-  }
-  const body = payload as Record<string, unknown>
-  const base = (body.base_resp ?? {}) as BaseResp
-  const code = base.status_code
-  if (code !== undefined && code !== 0) {
-    const message = `quota service error ${String(code)}: ${base.status_msg ?? 'unknown'}`
-    if (AUTH_STATUS_CODES.has(code)) throw new QuotaAuthError(code, message)
-    throw new QuotaNetworkError(message)
+    if (error instanceof ReadError && error.failure === 'auth') {
+      throw new QuotaAuthError(error.code ?? 0, error.message)
+    }
+    // A business rejection of `1016` is this service's way of saying the grant
+    // is no good, and the surface has to be able to tell that from a transient
+    // fault — it is the difference between offering a re-sign-in and offering a
+    // retry. The code travels in the message either way.
+    if (error instanceof ReadError && error.failure === 'rejected'
+      && error.code !== null && AUTH_STATUS_CODES.has(error.code)) {
+      throw new QuotaAuthError(error.code, error.message)
+    }
+    throw new QuotaNetworkError(
+      error instanceof Error ? error.message : String(error),
+      error instanceof Error ? { cause: error } : undefined,
+    )
   }
 
   // The windows live in `model_remains`, one entry per model family. A body
@@ -319,24 +263,14 @@ export async function fetchQuota(options: QuotaClientOptions): Promise<QuotaSnap
     ? body.model_remains.filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === 'object')
     : []
 
-  const windows: QuotaWindow[] = []
+  const windows: RemoteQuotaWindow[] = []
   for (const entry of entries) {
     const model = typeof entry.model_name === 'string' && entry.model_name.trim()
       ? entry.model_name
       : 'unknown'
-    windows.push(
-      readWindow(entry, model, 'interval',
-        'current_interval_total_percent', 'current_interval_used_percent',
-        'current_interval_status', 'end_time', 'remains_time',
-        'current_interval_total_count', 'current_interval_used_count',
-        'current_interval_remains_count'),
-      readWindow(entry, model, 'weekly',
-        'current_weekly_total_percent', 'current_weekly_used_percent',
-        'current_weekly_status', 'weekly_end_time', 'weekly_remains_time',
-        'current_weekly_total_count', 'current_weekly_used_count',
-        'current_weekly_remains_count'),
-    )
+    for (const [id, fields] of Object.entries(WINDOW_FIELDS) as [RemoteQuotaWindowId, WindowFields][]) {
+      windows.push(readWindow(entry, model, id, fields))
+    }
   }
-
-  return { windows, fetchedAtMs: now }
+  return windows
 }

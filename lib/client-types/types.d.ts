@@ -1,12 +1,20 @@
 /**
- * The wire contract between the Host service and the browser half.
+ * The vocabulary shared by the Host service and the browser half.
  *
  * Every shape here crosses `ctx.remote`, so the Typert generator derives a
  * strict codec from it. That constrains the vocabulary: plain records of
  * JSON-representable values, and `null` rather than `undefined` for "absent",
  * because an optional property has no single unambiguous wire encoding while
- * an explicit null does. The Host projects into these; the browser half never
- * sees a Cordis type, a class, or a token.
+ * an explicit null does. The browser half never sees a Cordis type, a class,
+ * or a token.
+ *
+ * There is deliberately no second set of "internal" shapes alongside these. The
+ * Host's readers parse straight into them, because a parallel model differing
+ * only in how it spells absence buys nothing and costs a projection function per
+ * field per read: an earlier version kept `QuotaWindow` and `PlanSnapshot`
+ * alongside `RemoteQuotaWindow` and `RemotePlanView`, and every field added
+ * since had to be written three times and translated by hand. One vocabulary,
+ * parsed once, drawn directly.
  */
 /** Where the account stands, as the surface needs to describe it. */
 export type RemoteAccountStatus = 'signed-out' | 'authorizing' | 'authenticated';
@@ -27,6 +35,18 @@ export interface RemoteAccountView {
 }
 /** Which allowance window a figure belongs to. */
 export type RemoteQuotaWindowId = 'interval' | 'weekly';
+/**
+ * The currency a window's allowance is actually drawn in.
+ *
+ * The service reports a percentage pair on every window and a count triple on
+ * some, and the two describe the same window rather than two views of it. Which
+ * one is the real allowance is decided once, by the Host, from what the service
+ * actually sent — and carried here so the surface draws the number rather than
+ * re-deriving the rule. An earlier version left that choice to the surface,
+ * which meant the policy lived on one side of the seam and the parser that
+ * produced the evidence lived on the other.
+ */
+export type QuotaMeter = 'count' | 'percent';
 /**
  * One metered allowance window, for one model.
  *
@@ -65,9 +85,18 @@ export interface RemoteQuotaWindow {
     /** Requests left, as the service counts them, when it counts at all. */
     readonly remainsCount: number | null;
     /**
+     * The currency to draw this window in.
+     *
+     * `count` when the service sent a real request-count allowance, `percent`
+     * when it sent `-1` for the counts and metered the window as a share of
+     * {@link totalPercent}. A real account does both: `general` at 6% / 150% and
+     * `video` at 0 / 21 on the same response.
+     */
+    readonly meter: QuotaMeter;
+    /**
      * False when the response carried none of this window's fields.
      *
-     * Decided by the percentage fields, which are what the surface draws. The
+     * Decided by the percentage fields, which every metered window reports. The
      * service's `*_count` fields are deliberately not consulted: a `-1` there
      * means there is no request-count quota attached, not that the window goes
      * unmetered, and a real account reports `-1` counts alongside a live

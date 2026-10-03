@@ -9,19 +9,21 @@
  * parameters, and `signal` last where cancellation is wanted.
  *
  * The browser half never receives a token. `state()` projects the account onto
- * display fields, and `quota()` returns percentages.
+ * display fields, and `quota()` and `plan()` hand back what their readers
+ * already parsed: both readers produce the wire shape directly, so this module
+ * projects only the account's discriminated state and otherwise decides which
+ * origin to read and how a failure is worded.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { MinimaxAccount, type MinimaxAccountState } from './account.ts'
 import type { RegionEndpoints } from './constants.ts'
-import { fetchPlan, type PlanSnapshot } from './plan.ts'
-import { fetchQuota, QuotaAuthError, type QuotaWindow } from './quota.ts'
+import { failedPlan, fetchPlan } from './plan.ts'
+import { fetchQuota, QuotaAuthError } from './quota.ts'
 import type {
   RemoteAccountView,
   RemotePlanView,
   RemoteQuotaView,
-  RemoteQuotaWindow,
 } from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -85,60 +87,22 @@ function toAccountView(state: MinimaxAccountState, region: string): RemoteAccoun
   }
 }
 
-/** Project one allowance window onto the wire record. */
-function toWindow(window: QuotaWindow): RemoteQuotaWindow {
-  return {
-    model: window.model,
-    window: window.window,
-    totalPercent: window.totalPercent,
-    usedPercent: window.usedPercent,
-    resetAtMs: window.resetAtMs ?? null,
-    remainsMs: window.remainsMs ?? null,
-    totalCount: window.totalCount ?? null,
-    usedCount: window.usedCount ?? null,
-    remainsCount: window.remainsCount ?? null,
-    present: window.present,
-    status: window.status ?? null,
-    unlimited: window.unlimited,
-  }
-}
 
-/** Project the plan read onto the wire record. */
-function toPlanView(snapshot: PlanSnapshot): RemotePlanView {
-  return {
-    accountName: snapshot.accountName ?? null,
-    accountId: snapshot.accountId ?? null,
-    tier: snapshot.tier ?? null,
-    planExpiresAtMs: snapshot.planExpiresAtMs ?? null,
-    hasTokenPlan: snapshot.hasTokenPlan ?? null,
-    subscriptionType: snapshot.subscriptionType ?? null,
-    error: snapshot.error ?? null,
-  }
-}
-
-/** A usage read that found no usable grant, with the reason already decided. */
-function unusableQuota(authExpired: boolean, error: string, now: number): RemoteQuotaView {
-  return { windows: [], fetchedAtMs: now, authExpired, error }
+/** The message a thrown value carries, for the surface to show. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /**
- * A plan read that produced nothing.
+ * A usage read that found no usable grant, with the reason already decided.
  *
- * There is no `authExpired` flag here the way the usage read has one: both
- * origins reject the same grant, and the surface already reacts to that through
- * the usage read. A plan-only failure would otherwise be able to drive the page
- * into a re-sign-in the usage read would contradict.
+ * The window and the plan records need no equivalent helper: their readers
+ * already produce the wire shape directly, so there is nothing left to project
+ * and nothing to get out of step. This wrapper is genuinely this module's own,
+ * because `authExpired` is a fact about the *grant* rather than about a read.
  */
-function unusablePlan(error: string): RemotePlanView {
-  return {
-    accountName: null,
-    accountId: null,
-    tier: null,
-    planExpiresAtMs: null,
-    hasTokenPlan: null,
-    subscriptionType: null,
-    error,
-  }
+function unusableQuota(authExpired: boolean, error: string, now: number): RemoteQuotaView {
+  return { windows: [], fetchedAtMs: now, authExpired, error }
 }
 
 /**
@@ -257,7 +221,10 @@ export class MinimaxRemoteService extends TypertRemoteService {
    * A read failure is reported in the returned record rather than thrown: the
    * surface must be able to distinguish "no grant yet" from "the service is
    * unreachable" and offer the right next step, and a thrown RemoteError would
-   * collapse both into one failure branch.
+   * collapse both into one failure branch. This is the one read that keeps a
+   * separate `authExpired` flag; `plan` does not need one, and giving it one
+   * would let a plan-only 401 drive the page into a re-sign-in that the usage
+   * read would contradict.
    *
    * @returns the windows, or the reason there are none.
    */
@@ -269,15 +236,13 @@ export class MinimaxRemoteService extends TypertRemoteService {
       return unusableQuota(grant.authExpired, grant.error, now)
     }
     try {
-      const snapshot = await fetchQuota({
-        token: grant.token,
-        endpoints: this.options.endpoints,
-        fetchImpl: this.options.fetchImpl,
-        now: this.options.now,
-      })
       return {
-        windows: snapshot.windows.map(toWindow),
-        fetchedAtMs: snapshot.fetchedAtMs,
+        windows: await fetchQuota({
+          origin: this.options.endpoints.quotaOrigin,
+          token: grant.token,
+          fetchImpl: this.options.fetchImpl,
+        }),
+        fetchedAtMs: now,
         authExpired: false,
         error: null,
       }
@@ -286,7 +251,7 @@ export class MinimaxRemoteService extends TypertRemoteService {
       if (error instanceof QuotaAuthError) {
         return unusableQuota(true, error.message, now)
       }
-      return unusableQuota(false, error instanceof Error ? error.message : String(error), now)
+      return unusableQuota(false, describe(error), now)
     }
   }
 
@@ -296,27 +261,22 @@ export class MinimaxRemoteService extends TypertRemoteService {
    * Kept separate from {@link quota} rather than folded into it, so the two
    * reads fail independently: a plan outage must not blank a usage figure the
    * service already answered with, and a usage outage must not hide the tier
-   * name. A failure is reported in the returned record for the same reason
-   * `quota` does — the surface has to tell "no grant yet" from "unreachable".
+   * name. `fetchPlan` reports its own failures in the record it returns, so
+   * this method has nothing left to do but hand it across.
    *
-   * @returns the account and plan, or the reason there are none.
+   * @returns the account and plan, with any failure's reason in `error`.
    */
   @Remote('plan')
   async plan(): Promise<RemotePlanView> {
     const grant = await this.resolveGrant()
     if (!('token' in grant)) {
-      return unusablePlan(grant.error)
+      return failedPlan(grant.error)
     }
-    try {
-      return toPlanView(await fetchPlan({
-        token: grant.token,
-        endpoints: this.options.endpoints,
-        fetchImpl: this.options.fetchImpl,
-      }))
-    }
-    catch (error) {
-      return unusablePlan(error instanceof Error ? error.message : String(error))
-    }
+    return fetchPlan({
+      origin: this.options.endpoints.agentOrigin,
+      token: grant.token,
+      fetchImpl: this.options.fetchImpl,
+    })
   }
 }
 

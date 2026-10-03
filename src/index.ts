@@ -27,22 +27,18 @@ export { Config, defaultCredentialsPath, endpointsFor } from './config.ts'
 export { registerMinimaxAuthorization } from './authorization.ts'
 export { MinimaxRemoteService, type MinimaxRemoteOptions } from './remote.ts'
 export type {
+  QuotaMeter,
   RemoteAccountStatus,
   RemoteAccountView,
   RemotePlanView,
   RemoteQuotaView,
   RemoteQuotaWindow,
+  RemoteQuotaWindowId,
   RemoteSignInFailure,
 } from './types.ts'
-export { fetchPlan, PlanAuthError, PlanNetworkError, type PlanClientOptions, type PlanSnapshot } from './plan.ts'
-export {
-  fetchQuota,
-  QuotaAuthError,
-  QuotaNetworkError,
-  type QuotaClientOptions,
-  type QuotaSnapshot,
-  type QuotaWindow,
-} from './quota.ts'
+export { failedPlan, fetchPlan, type PlanClientOptions } from './plan.ts'
+export { fetchQuota, QuotaAuthError, QuotaNetworkError, type QuotaClientOptions } from './quota.ts'
+export { readJson, ReadError, type ReadClient, type ReadFailure, type ReadRequest } from './read.ts'
 export { GRANT_KEY, grantPayload, parseGrantPayload, readGrant, writeGrant, clearGrant } from './grant.ts'
 export { MinimaxAccount, type MinimaxAccountOptions, type MinimaxAccountState } from './account.ts'
 export {

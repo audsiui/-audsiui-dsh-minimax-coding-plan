@@ -173,11 +173,12 @@ check("current rejection signs out",
 const jsonResponse = (body, status = 200) => new Response(JSON.stringify(body), {
   status, headers: { "content-type": "application/json" },
 });
+// A reader takes the one origin it reads from, not the region's four, so the
+// choice of host is made here rather than inside the reader.
 const quotaFor = (body, status = 200) => ({
+  origin: minimax.REGION_ENDPOINTS.cn.quotaOrigin,
   token: "quota-token",
-  endpoints: minimax.REGION_ENDPOINTS.cn,
   fetchImpl: async () => jsonResponse(body, status),
-  now: () => 1_700_000_000_000,
 });
 
 // The shape the service actually sends, captured verbatim from a live
@@ -237,9 +238,9 @@ const REAL_SHAPE = {
 };
 
 const parsed = await minimax.fetchQuota(quotaFor(REAL_SHAPE));
-const generalWeekly = parsed.windows.find(w => w.model === "general" && w.window === "weekly");
-const generalInterval = parsed.windows.find(w => w.model === "general" && w.window === "interval");
-const videoWeekly = parsed.windows.find(w => w.model === "video" && w.window === "weekly");
+const generalWeekly = parsed.find(w => w.model === "general" && w.window === "weekly");
+const generalInterval = parsed.find(w => w.model === "general" && w.window === "interval");
+const videoWeekly = parsed.find(w => w.model === "video" && w.window === "weekly");
 check("the weekly window is parsed from the percent string", generalWeekly.usedPercent === 6, `${generalWeekly.usedPercent}`);
 check("the interval window is parsed from the percent string", generalInterval.usedPercent === 0, `${generalInterval.usedPercent}`);
 check("a total above 100 is not clamped", generalWeekly.totalPercent === 150, `${generalWeekly.totalPercent}`);
@@ -252,17 +253,16 @@ check("the service's own remaining time is reported",
 check("the service's window status is carried verbatim", generalWeekly.status === 1, `${generalWeekly.status}`);
 check("counts of -1 do not hide a live percentage allowance", generalWeekly.present === true, `${generalWeekly.present}`);
 check("both entries report a present window", videoWeekly.present === true, `${videoWeekly.present}`);
-check("one entry per model family, two windows each", parsed.windows.length === 4, `${parsed.windows.length}`);
-check("the models are kept apart", new Set(parsed.windows.map(w => w.model)).size === 2);
-check("fetchedAt is the injected clock", parsed.fetchedAtMs === 1_700_000_000_000);
+check("one entry per model family, two windows each", parsed.length === 4, `${parsed.length}`);
+check("the models are kept apart", new Set(parsed.map(w => w.model)).size === 2);
 
 // The two currencies. `general` sends -1 for every count because it is metered
 // purely in percentages; `video` sends real counts. Dropping the counts would
 // have left the video entry drawable only as `0% / 100%`, which is both less
 // informative and not what the service is reporting.
 check("a -1 count is reported as absent, not as a count",
-  generalWeekly.totalCount === undefined && generalWeekly.usedCount === undefined
-    && generalWeekly.remainsCount === undefined,
+  generalWeekly.totalCount === null && generalWeekly.usedCount === null
+    && generalWeekly.remainsCount === null,
   `${generalWeekly.totalCount}/${generalWeekly.usedCount}/${generalWeekly.remainsCount}`);
 check("a real count survives parsing",
   videoWeekly.totalCount === 21 && videoWeekly.usedCount === 0 && videoWeekly.remainsCount === 21,
@@ -270,6 +270,27 @@ check("a real count survives parsing",
 check("a metered window keeps its percentage pair too",
   videoWeekly.usedPercent === 0 && videoWeekly.totalPercent === 100,
   `${videoWeekly.usedPercent}/${videoWeekly.totalPercent}`);
+
+// The currency is decided once, here, and carried on the window. The surface
+// used to re-derive it, which put the policy on one side of the seam and the
+// evidence for it on the other.
+check("a percentage-metered window says so",
+  generalWeekly.meter === "percent" && generalInterval.meter === "percent",
+  `${generalWeekly.meter} / ${generalInterval.meter}`);
+check("a count-metered window says so", videoWeekly.meter === "count", videoWeekly.meter);
+// A zero total is not a quota: the service sends it on a window it does not
+// count, and treating it as one would draw an empty bar labelled `0 / 0`.
+const zeroCount = await minimax.fetchQuota(quotaFor({
+  model_remains: [{
+    model_name: "video",
+    current_weekly_total_count: 0, current_weekly_used_count: 0, current_weekly_remains_count: 0,
+    current_weekly_total_percent: "100%", current_weekly_used_percent: "0%", current_weekly_status: 1,
+  }],
+  base_resp: { status_code: 0 },
+}));
+check("a zero count is not treated as a request quota",
+  zeroCount.find(w => w.window === "weekly").meter === "percent",
+  zeroCount.find(w => w.window === "weekly").meter);
 
 // `status: 3` is what MiniMax's own client maps to "unlimited". The mapping
 // was removed from this package once on the strength of a guess that a -1
@@ -289,9 +310,9 @@ const unmetered = await minimax.fetchQuota(quotaFor({
   base_resp: { status_code: 0 },
 }));
 check("a status of 3 is unlimited, on the window that reported it",
-  unmetered.windows.every(w => w.unlimited === true)
-  && unmetered.windows.every(w => w.present === true),
-  JSON.stringify(unmetered.windows.map(w => [w.window, w.unlimited])));
+  unmetered.every(w => w.unlimited === true)
+  && unmetered.every(w => w.present === true),
+  JSON.stringify(unmetered.map(w => [w.window, w.unlimited])));
 // The statuses are per window: an interval at 3 and a weekly at 1 must not
 // collapse into one flag for the model.
 const mixed = await minimax.fetchQuota(quotaFor({
@@ -307,9 +328,9 @@ const mixed = await minimax.fetchQuota(quotaFor({
   base_resp: { status_code: 0 },
 }));
 check("unlimited is per window, not per model",
-  mixed.windows.find(w => w.window === "interval").unlimited === true
-  && mixed.windows.find(w => w.window === "weekly").unlimited === false,
-  JSON.stringify(mixed.windows.map(w => [w.window, w.unlimited])));
+  mixed.find(w => w.window === "interval").unlimited === true
+  && mixed.find(w => w.window === "weekly").unlimited === false,
+  JSON.stringify(mixed.map(w => [w.window, w.unlimited])));
 
 // A seconds-valued reset is still lifted, since the service is not consistent
 // about the unit and the older fixture proved the seconds form exists.
@@ -318,8 +339,8 @@ const seconds = await minimax.fetchQuota(quotaFor({
   base_resp: { status_code: 0 },
 }));
 check("a seconds-valued reset is lifted to millis",
-  seconds.windows.find(w => w.window === "weekly").resetAtMs === 1_700_600_000_000,
-  `${seconds.windows.find(w => w.window === "weekly").resetAtMs}`);
+  seconds.find(w => w.window === "weekly").resetAtMs === 1_700_600_000_000,
+  `${seconds.find(w => w.window === "weekly").resetAtMs}`);
 
 // An entry that carries none of a window's fields is genuinely absent. This is
 // the only thing that makes a window "unmetered": the counts, which are -1 on
@@ -329,7 +350,7 @@ const bare = await minimax.fetchQuota(quotaFor({
   base_resp: { status_code: 0 },
 }));
 check("an entry with no percentage fields is reported absent",
-  bare.windows.every(w => w.present === false), JSON.stringify(bare.windows.map(w => [w.window, w.present])));
+  bare.every(w => w.present === false), JSON.stringify(bare.map(w => [w.window, w.present])));
 
 // An unrecognised model must still produce windows rather than being dropped.
 const unnamed = await minimax.fetchQuota(quotaFor({
@@ -337,8 +358,8 @@ const unnamed = await minimax.fetchQuota(quotaFor({
   base_resp: { status_code: 0 },
 }));
 check("an entry with no model_name is still reported",
-  unnamed.windows.length === 2 && unnamed.windows.every(w => w.model === "unknown"),
-  unnamed.windows.map(w => w.model).join(","));
+  unnamed.length === 2 && unnamed.every(w => w.model === "unknown"),
+  unnamed.map(w => w.model).join(","));
 
 // 1016 is the only auth code that has been observed, and the live endpoint
 // answers it for a missing credential and a rejected one alike — probed with no
@@ -360,6 +381,26 @@ check("a non-auth business code is not mistaken for an expired grant",
   !(bizError instanceof minimax.QuotaAuthError) && bizError instanceof minimax.QuotaNetworkError, bizError?.name);
 check("an unrecognised code still reports what the server said",
   bizError?.message.includes("1003") && bizError.message.includes("group-not-member"), bizError?.message);
+
+// The open platform reports a bad key as HTTP 200 with a body, and the agent
+// origin as HTTP 401 with none. Sharing one reader means it has to decide what
+// a 401 *carrying* a business code means, and the answer is that the body wins:
+// `1003` is a statement about membership, not about the credential, and the
+// surface offers a retry for one and a re-sign-in for the other.
+check("a 401 carrying a business code is judged by the business code",
+  !(bizError instanceof minimax.QuotaAuthError)
+  && bizError?.message.includes("group-not-member"),
+  bizError?.message);
+let bare401;
+try { await minimax.fetchQuota(quotaFor({}, 401)); } catch (e) { bare401 = e; }
+check("a 401 with no business code is still an expired grant",
+  bare401 instanceof minimax.QuotaAuthError, `${bare401?.name}`);
+let html401;
+try {
+  await minimax.fetchQuota({ ...quotaFor(null), fetchImpl: async () => new Response("<html>login</html>", { status: 401 }) });
+} catch (e) { html401 = e; }
+check("a 401 behind a login redirect is an expired grant, not a transport fault",
+  html401 instanceof minimax.QuotaAuthError, `${html401?.name}: ${html401?.message}`);
 
 let nonJson;
 try {
@@ -447,8 +488,8 @@ const planFetch = (routes, seen = []) => async (url, init) => {
   return jsonResponse({ base_resp: { status_code: 0 } }, 404);
 };
 const planFor = (routes, seen) => ({
+  origin: minimax.REGION_ENDPOINTS.cn.agentOrigin,
   token: "plan-token",
-  endpoints: minimax.REGION_ENDPOINTS.cn,
   fetchImpl: planFetch(routes, seen),
 });
 
@@ -465,7 +506,7 @@ check("the plan tier is read from token_plan_tier, not the empty plan_name",
 check("the plan expiry is carried through",
   plan.planExpiresAtMs === 1822348800000, `${plan.planExpiresAtMs}`);
 check("the subscription kind is reported", plan.subscriptionType === "token_plan", `${plan.subscriptionType}`);
-check("a complete plan read reports no error", plan.error === undefined, `${plan.error}`);
+check("a complete plan read reports no error", plan.error === null, `${plan.error}`);
 
 // The two reads live on different hosts, and the account one is a GET that
 // insists on a query string. Neither fact is visible from the other.
@@ -491,11 +532,16 @@ check("no credit balance is reported, because the two fields disagree",
 
 // --- One failing read must not blank the other --------------------------------
 //
-// The bug this pins down: `fetchPlan` documents that neither read can blank the
-// other, and then threw on any failure at all — discarding the half that had
-// already answered. A plan outage blanked the account name, and an account
-// outage blanked the tier name, which is exactly the coupling the split was
-// supposed to remove.
+// Two properties, both of which the surface depends on and neither of which the
+// interface states on its own:
+//
+//   * A read that fails alone does not fail the whole thing. An earlier version
+//     documented that and then threw on any failure at all, which a test caught:
+//     a plan outage blanked the account name and an account outage blanked the
+//     tier name — exactly the coupling the split was meant to remove.
+//   * It never throws at all. The surface keys "offer a re-sign-in" off the
+//     *usage* read's `authExpired`, so a plan failure has no distinct action
+//     behind it; a throw would only add a branch the caller must know about.
 
 const accountDown = await minimax.fetchPlan(planFor([
   ["/v1/api/user/info", () => jsonResponse({ statusInfo: { code: 2, message: "请求异常，请检查请求参数" } }, 400)],
@@ -503,14 +549,12 @@ const accountDown = await minimax.fetchPlan(planFor([
 ]));
 check("a failing account read still lets the plan through",
   accountDown.tier === "Max" && accountDown.planExpiresAtMs === 1822348800000
-  && accountDown.accountName === undefined,
+  && accountDown.accountName === null,
   `tier=${accountDown.tier} name=${accountDown.accountName}`);
-check("the surviving read is not reported as a failure of its own",
-  accountDown.error === undefined || typeof accountDown.error === "string");
 
-// The account read's own error envelope, since it is the one the other two
-// reads do not use: a non-zero `statusInfo.code` behind an HTTP 400 is a
-// business answer, and its code and wording have to survive into the message.
+// The account read's own error envelope, since it is the one the quota read
+// does not use: a non-zero `statusInfo.code` behind an HTTP 400 is a business
+// answer, and its code and wording have to survive into the message.
 check("a non-zero code inside the account envelope reaches the message",
   typeof accountDown.error === "string"
   && accountDown.error.includes("2") && accountDown.error.includes("请求参数"),
@@ -521,7 +565,7 @@ const planDown = await minimax.fetchPlan(planFor([
   ["/commerce/get_membership_info", () => jsonResponse({ base_resp: { status_code: 30700, status_msg: "region-restriction" } })],
 ]));
 check("a failing plan read still lets the account through",
-  planDown.accountName === "MiniMax381968" && planDown.tier === undefined,
+  planDown.accountName === "MiniMax381968" && planDown.tier === null,
   `name=${planDown.accountName} tier=${planDown.tier}`);
 check("a non-zero base_resp on the plan read reaches the message",
   typeof planDown.error === "string"
@@ -530,32 +574,29 @@ check("a non-zero base_resp on the plan read reaches the message",
 
 let planBothDown;
 try {
-  await minimax.fetchPlan(planFor([
+  planBothDown = await minimax.fetchPlan(planFor([
     ["/v1/api/user/info", () => jsonResponse({ statusInfo: { code: 2 } }, 400)],
     ["/commerce/get_membership_info", () => jsonResponse({ base_resp: { status_code: 30700 } })],
   ]));
 } catch (e) { planBothDown = e; }
-check("two failures throw, because there is nothing left to draw",
-  planBothDown instanceof minimax.PlanNetworkError, planBothDown?.message);
-
-let planAuthError;
-try {
-  await minimax.fetchPlan({
+check("two failures report, rather than throw, because they never throw",
+  !(planBothDown instanceof Error) && planBothDown.error !== null
+  && planBothDown.tier === null && planBothDown.accountName === null,
+  planBothDown instanceof Error ? `THREW ${planBothDown.name}` : planBothDown.error);
+check("a rejected grant is reported in the record too, never thrown",
+  (await minimax.fetchPlan({
+    origin: minimax.REGION_ENDPOINTS.cn.agentOrigin,
     token: "plan-token",
-    endpoints: minimax.REGION_ENDPOINTS.cn,
     fetchImpl: async () => jsonResponse({}, 401),
-  });
-} catch (e) { planAuthError = e; }
-check("a 401 is the grant being rejected, not a network fault",
-  planAuthError instanceof minimax.PlanAuthError, `${planAuthError?.name}: ${planAuthError?.message}`);
+  })).error?.includes("401") === true);
 
 // The grant travels the same way on the agent origin. Measured against the live
 // endpoint across ten combinations: only `Authorization: Bearer` passes, and the
 // request signatures MiniMax's renderer computes are not required.
 let planAuthHeader;
 await minimax.fetchPlan({
+  origin: minimax.REGION_ENDPOINTS.cn.agentOrigin,
   token: "plan-token",
-  endpoints: minimax.REGION_ENDPOINTS.cn,
   fetchImpl: async (_url, init) => {
     planAuthHeader = new Headers(init.headers).get("authorization");
     return jsonResponse(USER_INFO);
