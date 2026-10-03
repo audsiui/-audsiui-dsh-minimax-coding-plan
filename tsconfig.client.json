@@ -14,5 +14,5 @@
   /* The browser half plus the two files it shares with the Host. The generated
      Remote contribution is the wire contract, not a host program: it carries
      codecs the Host face never sees. */
-  "include": ["src/client", "src/generated", "src/types.ts"]
+  "include": ["src/client", "src/generated", "src/types.ts", "src/css.d.ts"]
 }

@@ -27,8 +27,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { TypertRemoteContribution, TypertRemoteNamespaceMap } from '@deepseek-ai/dsh-typert-protocol'
 import remoteContribution from '../generated/remote.ts'
 import type { RemoteAccountView, RemoteQuotaView } from '../types.ts'
-import { MinimaxAccountCard } from './MinimaxAccountCard.tsx'
-import { MinimaxUsageBars } from './MinimaxUsageBars.tsx'
+import { MinimaxPage } from './MinimaxPage.tsx'
 import { en, zh, type MinimaxLocaleKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -107,14 +106,12 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     t,
   }
 
-  ctx.slots.inject('settings.action', () => ctx.slots.register({
-    name: 'settings.action',
-    id: 'minimax-coding-plan',
-    order: 20,
-    locale: NS,
-    inject: () => api,
-  }, MinimaxAccountCard))
-
+  // One section, and it is the whole page. `settings.section` is the only
+  // settings seat whose entry owns its own internals: the owner hands it
+  // nothing but `close`, and the shell renders the entry into the content
+  // column with its own label in the nav. `settings.action` is deliberately not
+  // used — that is the header strip before the Close button, which is sized
+  // for a one-line control, not for an account panel.
   ctx.slots.inject('settings.section', () => ctx.slots.register({
     name: 'settings.section',
     id: 'minimax',
@@ -122,7 +119,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     label: () => t('usage.section'),
     locale: NS,
     inject: () => api,
-  }, MinimaxUsageBars))
+  }, MinimaxPage))
 
   return disposeRemote
 }

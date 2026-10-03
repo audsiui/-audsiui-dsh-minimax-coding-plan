@@ -1,6 +1,6 @@
 // Assert the browser bundle's shape, so a bundler change that breaks the
 // loader contract fails here rather than in a browser console.
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const source = readFileSync(resolve(import.meta.dirname, 'lib/client.js'), 'utf8')
@@ -38,8 +38,17 @@ check('no zod is inlined into the browser bundle',
 
 // The surface must actually be registered, or the entry loads and does nothing.
 check('mounts the generated Remote contribution', /\$mount\(/.test(source))
-check('registers the sign-in / sign-out action', source.includes('settings.action'))
-check('registers the usage section', source.includes('settings.section'))
+check('registers exactly one settings section', source.includes('settings.section'))
+
+// The stylesheet must be inlined and self-injecting. Extracted to a sibling
+// `style.css` it is never requested by the combo script, and the page renders
+// unstyled with nothing in the console to explain it.
+check('the stylesheet is inlined into the bundle', source.includes('data-plugin-css'))
+check('the stylesheet injects a <style> element', /createElement\(\s*["'`]style["'`]\s*\)/.test(source))
+check('injection is idempotent across remounts', /querySelector\(`style\[data-plugin-css/.test(source))
+check('no separate stylesheet is emitted alongside the bundle', !existsSync(resolve(import.meta.dirname, 'lib/style.css')))
+check('the page reaches dsh primitives, not raw elements',
+  source.includes('SegmentedControl') || source.includes('minimax-page'))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

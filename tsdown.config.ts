@@ -1,7 +1,50 @@
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { defineConfig } from 'tsdown'
 
 /** Entry name the browser loader looks the package up by. */
 const PACKAGE_ID = '@audsiui/dsh-minimax-coding-plan'
+
+/** Marker id for the one stylesheet this package owns. */
+const CSS_PREFIX = '\0minimax-css:'
+
+/**
+ * Turn a stylesheet import into a module that injects its own `<style>`.
+ *
+ * Extracting CSS to a sibling file is the wrong shape here. The browser half is
+ * loaded as a combo script, so a separate `style.css` is never requested and
+ * the page renders unstyled with no error to say so — which is exactly how a
+ * missing stylesheet presents. Injecting at materialisation puts the style in
+ * the same lazy step as the component, keyed so a second mount is a no-op
+ * rather than a duplicate tag.
+ */
+const inlineStylesheet = {
+  name: 'minimax-inline-stylesheet',
+  resolveId(source: string, importer?: string) {
+    if (!source.endsWith('.css') || importer === undefined) return null
+    // `source` is relative to whoever imported it, and that importer lives in
+    // the emitted tree, not the source tree — which is what build/copy-client-
+    // assets.mjs puts the stylesheet next to. The `.css` suffix is dropped from
+    // the id: a virtual id that still ends in `.css` is claimed by rolldown's own
+    // stylesheet pipeline before this hook is consulted.
+    return CSS_PREFIX + resolve(dirname(importer), source).slice(0, -'.css'.length)
+  },
+  load(id: string) {
+    if (!id.startsWith(CSS_PREFIX)) return null
+    const file = `${id.slice(CSS_PREFIX.length)}.css`
+    return [
+      `const css=${JSON.stringify(readFileSync(file, 'utf8'))};`,
+      `const key=${JSON.stringify(PACKAGE_ID)};`,
+      'if(typeof document!=="undefined"&&!document.querySelector(`style[data-plugin-css="${key}"]`)){',
+      'const el=document.createElement("style");',
+      'el.dataset.pluginCss=key;',
+      'el.textContent=css;',
+      'document.head.appendChild(el);',
+      '}',
+      'export default {};',
+    ].join('\n')
+  },
+}
 
 /**
  * Modules the shell already provides. They are `external` in the browser build
@@ -102,6 +145,7 @@ export default defineConfig([
       // Everything the platform does not already provide is ours to ship.
       alwaysBundle: (id: string) => !PLATFORM_MODULES.includes(id),
     },
+    plugins: [inlineStylesheet],
     outputOptions: {
       entryFileNames: 'client.js',
       banner: `window.__ModuleLoader__.load({id:${JSON.stringify(PACKAGE_ID)},factory:(require)=>{`,
