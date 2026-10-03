@@ -174,7 +174,18 @@ export class MinimaxRemoteService extends TypertRemoteService {
     if (state.status !== 'authenticated') {
       return unusableQuota(false, 'not signed in', now)
     }
-    const token = await this.options.account.resolveToken(this.options.endpoints.quotaOrigin)
+    // Resolving the grant can reject on its own — a refresh that gets a 5xx or
+    // a socket that dies — so it shares the read's fate. An exception escaping a
+    // @Remote method is folded by the Gateway into `gateway/internal`
+    // (`docs/cookbook/adding-a-remote-api.zh.md:53`), which would hand the
+    // surface a failure it cannot tell from a quota outage.
+    let token: string | undefined
+    try {
+      token = await this.options.account.resolveToken(this.options.endpoints.quotaOrigin)
+    }
+    catch (error) {
+      return unusableQuota(true, error instanceof Error ? error.message : String(error), now)
+    }
     if (token === undefined) {
       return unusableQuota(true, 'the stored grant could not be resolved', now)
     }

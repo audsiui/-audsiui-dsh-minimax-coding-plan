@@ -206,6 +206,16 @@ try {
     writeFile(resolve(root, 'src/generated/host.ts'), artifact.js),
     writeFile(resolve(root, 'src/generated/remote.ts'), artifact.remote.js),
     writeFile(resolve(root, 'src/generated/remote-augmentation.d.ts'), artifact.remote.dts),
+    // The two `types` conditions the manifest publishes. `docs/api-gateway.zh.md:109-113`
+    // names all five artifacts, and `lib/` is emptied by build/clean.mjs before every
+    // build, so the generator's own output is kept in src/generated/ and
+    // build/copy-assets.mjs puts it where the manifest points. Emitting them
+    // anywhere else would leave `exports` naming files that do not exist, and the
+    // only documented route by which a consumer picks up the declaration merge
+    // (`docs/api-gateway.zh.md:78`) would silently resolve to nothing.
+    writeFile(resolve(root, 'src/generated/typert.host.d.ts'), artifact.dts),
+    writeFile(resolve(root, 'src/generated/typert.remote-client.d.ts'), artifact.remote.dts),
+    writeFile(resolve(root, 'src/generated/typert.remote-client.d.ts.map'), artifact.remote.dtsMap),
   ])
 
   const endpoints = [...artifact.remote.js.matchAll(/["'`]([a-z]+)\/([a-z]+)["'`]/gu)]

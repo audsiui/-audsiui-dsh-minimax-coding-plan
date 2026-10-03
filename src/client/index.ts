@@ -4,8 +4,12 @@
  * The browser half reaches this process through one generated contribution:
  * `src/generated/remote.ts` holds the invocation descriptors and codecs the
  * Typert generator produced from the Host `@Remote` methods, and
- * `ctx.remote.$mount()` installs it. That is the whole contract — no ad-hoc
- * transport, and nothing here can reach the Host except through a method whose
+ * `ctx.remote.$mount()` installs it. `$mount` is the documented assembly entry
+ * (`docs/subsystems/typert.zh.md:351,361`); each namespace becomes a traced
+ * `remote.<namespace>` child service, which is what the lookup below reads
+ * (`docs/api-gateway.zh.md:60`). This package is its own assembly — it owns both
+ * halves — so it mounts here rather than waiting for `@deepseek-ai/dsh-api-remotes`
+ * to do it. Nothing here can reach the Host except through a method whose
  * arguments the Gateway validated against a generated schema.
  *
  * Nothing in this file ever holds a credential. `state()` returns display
@@ -15,11 +19,11 @@
  *
  * `SlotMap` is populated by declaration merging from whichever package owns
  * each key, so a plugin can only fill slots its installed client packages
- * actually declare. This build fills `settings.section` and `settings.action`,
- * which every version in the supported range declares. It deliberately does not
- * reach for the more specific model-page slots: those have moved between
- * releases, and a plugin that registers against a key the running shell does
- * not declare fails the whole client fiber, not just its own entry.
+ * actually declare. This build fills `settings.section` only, which every
+ * version in the supported range declares. It deliberately does not reach for
+ * the more specific model-page slots: those have moved between releases, and a
+ * plugin that registers against a key the running shell does not declare fails
+ * the whole client fiber, not just its own entry.
  */
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
@@ -28,6 +32,7 @@ import type { TypertRemoteContribution, TypertRemoteNamespaceMap } from '@deepse
 import remoteContribution from '../generated/remote.ts'
 import type { RemoteAccountView, RemoteQuotaView } from '../types.ts'
 import { MinimaxPage } from './MinimaxPage.tsx'
+import { disposeStylesheet } from './MinimaxPage.module.css'
 import { en, zh, type MinimaxLocaleKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -38,35 +43,44 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 
 const NS = 'settings.minimax'
 
-/** Platform services required before this half activates. */
+/**
+ * Platform services required before this half activates.
+ *
+ * `remote` is declared because `$mount` is called on it. The `remote.minimax`
+ * namespace is deliberately *not* declared: it does not exist until this same
+ * function has mounted it, and an assembly that both mounts and calls owns that
+ * ordering itself (`docs/api-gateway.zh.md:60` assigns the namespace dependency
+ * to a business caller, not to the mounting assembly).
+ */
 export const inject = ['slots', 'locale', 'remote', 'connection']
 
 /** The subset of the mounted namespace this surface calls. */
 type MinimaxRemote = TypertRemoteNamespaceMap['minimax']
 
 /**
- * The Remote-backed surface API, handed to each component through the slot
- * `inject` factory. Declared here rather than borrowed from a slot declaration
- * because the two slots this build fills do not declare an inject face, and the
- * component props intersect it explicitly.
+ * The Remote-backed surface API, handed to the component through the slot
+ * entry's inject face.
+ *
+ * `t` is not a member: it arrives separately from the registration's `locale`
+ * namespace, so the component composes both shares rather than finding a
+ * hand-written intersection (`docs/subsystems/slots.zh.md:73-74`).
  */
 export interface MinimaxSurfaceApi {
   loadState: () => Promise<RemoteAccountView>
   loadQuota: () => Promise<RemoteQuotaView>
   startSignIn: () => Promise<void>
   signOut: () => Promise<void>
-  t: (key: MinimaxLocaleKey) => string
 }
 
 /**
- * Mount the package Remote, then contribute both surfaces.
+ * Mount the package Remote, then contribute the surface.
  *
  * The Remote is mounted rather than assumed present: a profile whose Host half
  * failed to load would otherwise leave a surface whose every call is
  * `remote/unavailable`, which is a far worse failure than an absent surface.
  *
  * @param ctx - the browser half's context.
- * @returns the Remote disposer, so unloading withdraws the namespace with it.
+ * @returns a disposer that withdraws the namespace and the stylesheet.
  */
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const disposeRemote = await ctx.remote.$mount(remoteContribution as TypertRemoteContribution)
@@ -77,18 +91,17 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   }
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'minimax: dictionaries')
-  const bound = ctx.locale.bind(NS)
-  const t = (key: MinimaxLocaleKey): string => bound(key)
+  const t = ctx.locale.bind(NS)
 
   const api: MinimaxSurfaceApi = {
     loadState: async () => {
       const result = await remote.state()
-      if (!result.ok) throw new Error(result.error.message)
+      if (!result.ok) throw result.error
       return result.value
     },
     loadQuota: async () => {
       const result = await remote.quota()
-      if (!result.ok) throw new Error(result.error.message)
+      if (!result.ok) throw result.error
       return result.value
     },
     // Device authorization is a conversation, not a request: the call returns
@@ -97,13 +110,12 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     // status says it is authorizing, and stops as soon as it does not.
     startSignIn: async () => {
       const result = await remote.signIn()
-      if (!result.ok) throw new Error(result.error.message)
+      if (!result.ok) throw result.error
     },
     signOut: async () => {
       const result = await remote.signOut()
-      if (!result.ok) throw new Error(result.error.message)
+      if (!result.ok) throw result.error
     },
-    t,
   }
 
   // One section, and it is the whole page. `settings.section` is the only
@@ -121,5 +133,11 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     inject: () => api,
   }, MinimaxPage))
 
-  return disposeRemote
+  return async () => {
+    // The module system owns stylesheet reclamation for the entries it maps
+    // (`docs/subsystems/client-modules.zh.md:108`); the tag this bundle injects
+    // is not one it can reach, so the entry hands it back on the way out.
+    disposeStylesheet()
+    await disposeRemote()
+  }
 }

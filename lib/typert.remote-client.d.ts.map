@@ -1,0 +1,1 @@
+{"version":3,"file":"typert.remote-client.d.ts","names":["quota","signIn","signOut","state"],"sources":["../src/remote.ts"],"sourcesContent":[null],"mappings":";;;;;;;;;IA0KQA,K;IA9BNC,M;IAcMC,O;IAzBNC,K;;;IAyCMH,e;IA9BNC,gB;IAcMC,iB;IAzBNC,e","ignoreList":[]}

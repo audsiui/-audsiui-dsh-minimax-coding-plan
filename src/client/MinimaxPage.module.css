@@ -1,0 +1,210 @@
+/*
+ * Component styles for the MiniMax settings page.
+ *
+ * Ownership rules this file obeys, all from `docs/web-styling.zh.md`:
+ *   :17  CSS Modules, no component library, no Tailwind.
+ *   :18  semantic `--dsw-alias-*` tokens only — never a colour literal, and
+ *        never a `var()` fallback that would quietly render the wrong colour.
+ *   :19  no theme selectors; light/dark overrides belong to the theme owner.
+ *   :20  every font-size is paired with its line-height, via a theme
+ *        typography variable wherever a role matches.
+ *   :24  every full-round radius pairs `corner-shape: round`.
+ *   :29  neutral flat borders and dividers are 0.5px hairlines.
+ *
+ * Radius scale and the settings-card material come from `docs/ui-radius.zh.md`
+ * (:30-37 for the scale, :96-102 for the card). Motion rides the theme's
+ * duration and curve tokens rather than local values (`web-styling.zh.md:11`).
+ */
+
+/* The settings card. R20 + 0.5px stroke on the settings fill — ui-radius.zh.md
+   :96-102, and the theme resolves stroke to `--dsw-alias-border-l4`. */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 20px;
+  min-width: 0;
+  border-radius: var(--dsw-radius-xl);
+  border: 0.5px solid var(--dsw-alias-settings-card-stroke);
+  background: var(--dsw-alias-settings-card-fill);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.title {
+  margin: 0;
+  font: var(--dsw-font-m-18);
+  color: var(--dsw-alias-label-primary);
+}
+
+.sub {
+  margin: 4px 0 0;
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.pillText {
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* The one thing the operator has to type by hand, so it is set large and
+   wide-tracked enough to read off the screen. A nested form group inside the
+   card takes R16 on its own purpose (ui-radius.zh.md:69), not the card's R20
+   minus padding. */
+.device {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: var(--dsw-radius-lg);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.deviceRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.deviceLabel {
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+/* No theme role covers a 20px monospace run, so the size is paired with its
+   line-height by hand (web-styling.zh.md:20) and the family is the theme's
+   own code stack. */
+.code {
+  margin-right: auto;
+  font-family: var(--ds-font-family-code);
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: 4px;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px 20px;
+  margin: 0;
+}
+
+.factLabel {
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.factValue {
+  margin: 2px 0 0;
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-primary);
+  word-break: break-all;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.error,
+.empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-secondary);
+}
+
+.error {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.usage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 18px;
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
+}
+
+.usageHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.usageTitle {
+  margin: 0;
+  font: var(--dsw-font-s-strong-14);
+  color: var(--dsw-alias-label-primary);
+}
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.meterHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.meterLabel {
+  font: var(--dsw-font-xs-strong-13);
+  color: var(--dsw-alias-label-primary);
+}
+
+.meterValue {
+  font: var(--dsw-font-xs-13);
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-secondary);
+}
+
+/* A full-round track is a documented exception to the scale (ui-radius.zh.md
+   :54), and every such declaration must pair the curve (web-styling.zh.md:24). */
+.track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  corner-shape: round;
+  background: var(--dsw-alias-button-primary-fill);
+  transition: width var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+
+.fillUnlimited {
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.meterFoot {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-secondary);
+}

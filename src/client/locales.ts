@@ -28,6 +28,7 @@ export const zh = {
   'usage.authExpired': '登录状态已失效，请重新登录',
   'usage.missing': '暂无用量数据',
   'usage.section': 'MiniMax 用量',
+  'usage.plan': '套餐：',
 } as const
 
 export type MinimaxLocaleKey = keyof typeof zh
@@ -62,4 +63,5 @@ export const en: Record<MinimaxLocaleKey, string> = {
   'usage.authExpired': 'The grant was rejected; sign in again',
   'usage.missing': 'No usage data',
   'usage.section': 'MiniMax usage',
+  'usage.plan': 'Plan:',
 }

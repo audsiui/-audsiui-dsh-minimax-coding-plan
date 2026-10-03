@@ -28,6 +28,7 @@ export declare const zh: {
     readonly 'usage.authExpired': "登录状态已失效，请重新登录";
     readonly 'usage.missing': "暂无用量数据";
     readonly 'usage.section': "MiniMax 用量";
+    readonly 'usage.plan': "套餐：";
 };
 export type MinimaxLocaleKey = keyof typeof zh;
 /** English mirror; the key set is the contract, not the wording. */

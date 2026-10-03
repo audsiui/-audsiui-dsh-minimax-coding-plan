@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 import { defineConfig } from 'tsdown'
 
 /** Entry name the browser loader looks the package up by. */
@@ -9,14 +10,25 @@ const PACKAGE_ID = '@audsiui/dsh-minimax-coding-plan'
 const CSS_PREFIX = '\0minimax-css:'
 
 /**
- * Turn a stylesheet import into a module that injects its own `<style>`.
+ * A class selector: a dot followed by an identifier that cannot start with a
+ * digit. That is what keeps `0.5px`, `0.999` and `1.5` out of the rewrite.
+ */
+const CLASS_SELECTOR = /\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)/g
+
+/**
+ * Turn a `.module.css` import into a scoped class map plus a live `<style>`.
  *
- * Extracting CSS to a sibling file is the wrong shape here. The browser half is
- * loaded as a combo script, so a separate `style.css` is never requested and
- * the page renders unstyled with no error to say so — which is exactly how a
- * missing stylesheet presents. Injecting at materialisation puts the style in
- * the same lazy step as the component, keyed so a second mount is a no-op
- * rather than a duplicate tag.
+ * Two rules from `docs/web-styling.zh.md` shape this: component styles are CSS
+ * Modules living beside the component (`:11`, `:17`), and `./client` has to be
+ * a single lazy-CJS script with no second request
+ * (`docs/cookbook/adding-a-settings-card.zh.md:60`). Extracting to a sibling
+ * `style.css` would satisfy neither — the page would load unstyled with no
+ * error to say so.
+ *
+ * The scoping pass is deliberately small: it rewrites class selectors in a file
+ * this package authors, and that file uses no `:global`, no nesting, and no
+ * `url()` or string literal that could hide a dot. Comments are stripped first
+ * so a commented-out selector cannot be renamed.
  */
 const inlineStylesheet = {
   name: 'minimax-inline-stylesheet',
@@ -32,16 +44,42 @@ const inlineStylesheet = {
   load(id: string) {
     if (!id.startsWith(CSS_PREFIX)) return null
     const file = `${id.slice(CSS_PREFIX.length)}.css`
+    const source = readFileSync(file, 'utf8')
+    // Hashed from the package-relative path so the name is stable across builds
+    // and still distinct from any other file's classes.
+    const hash = createHash('sha256')
+      .update(relative(resolve(import.meta.dirname, '..'), file).split('\\').join('/'))
+      .digest('hex')
+      .slice(0, 8)
+
+    const names = new Set<string>()
+    for (const match of source.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(CLASS_SELECTOR)) {
+      names.add(match[1]!)
+    }
+    const classes: Record<string, string> = {}
+    for (const name of names) classes[name] = `${name}_${hash}`
+
+    const scoped = source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(CLASS_SELECTOR, (_, name: string) => `.${classes[name] ?? name}`)
+
+    const selector = `"style[data-plugin-css=${JSON.stringify(PACKAGE_ID)}]"`
     return [
-      `const css=${JSON.stringify(readFileSync(file, 'utf8'))};`,
-      `const key=${JSON.stringify(PACKAGE_ID)};`,
-      'if(typeof document!=="undefined"&&!document.querySelector(`style[data-plugin-css="${key}"]`)){',
-      'const el=document.createElement("style");',
-      'el.dataset.pluginCss=key;',
-      'el.textContent=css;',
-      'document.head.appendChild(el);',
+      `const css=${JSON.stringify(scoped)};`,
+      `const classes=${JSON.stringify(classes)};`,
+      `const selector='${selector}';`,
+      'export function disposeStylesheet(){',
+      '  if(typeof document==="undefined")return;',
+      '  const el=document.querySelector(selector);',
+      '  if(el)el.remove();',
       '}',
-      'export default {};',
+      'if(typeof document!=="undefined"&&!document.querySelector(selector)){',
+      '  const el=document.createElement("style");',
+      `  el.dataset.pluginCss=${JSON.stringify(PACKAGE_ID)};`,
+      '  el.textContent=css;',
+      '  document.head.appendChild(el);',
+      '}',
+      'export default classes;',
     ].join('\n')
   },
 }
