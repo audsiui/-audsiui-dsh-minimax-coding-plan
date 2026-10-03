@@ -21,7 +21,8 @@
     "README.md"
   ],
   "scripts": {
-    "prepare": "tsdown",
+    "//scripts": "The build hook is prepack, never prepare. pnpm 11 runs only prepublish/prepack/publish when it builds a git-hosted dependency, but it *decides* to build whenever a prepare script exists. A prepare-only package therefore trips the allowBuilds gate and then silently builds nothing, so lib/ is committed and prepack keeps `pnpm pack` and `npm publish` honest.",
+    "prepack": "tsdown",
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "smoke": "tsx smoke.ts"

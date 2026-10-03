@@ -1,8 +1,11 @@
-# Build output and dependencies. `prepare` regenerates lib/ from src/ on a git
-# install, and the harness runs pnpm inside the profile, so neither belongs in
-# the repository.
+# Dependencies are never committed. `lib/` *is* committed, on purpose: see the
+# `//scripts` note in package.json. pnpm decides a git-hosted package needs a
+# build whenever a `prepare` script exists, then only runs prepublish/prepack/
+# publish, so a source-only package either demands an SHA-pinned `allowBuilds`
+# entry or installs with lib/ missing. Committing the artifact is what lets
+# `dsh plugin add github:...` work with no manual step. Run `npm run build` and
+# commit lib/ alongside any src/ change.
 node_modules/
-lib/
 *.tsbuildinfo
 
 # Dependencies are installed with pnpm by the harness; an npm lockfile would be

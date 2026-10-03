@@ -217,24 +217,46 @@ That matters most for `@deepseek-ai/schemastery`: this package composes schema
 objects it receives from `dsh-llm-deepseek`, and schemastery compares schemas by
 instance, so a second copy produces schemas the host's loader cannot recognise.
 
-**Git installs pull source, not build output.** Nobody runs your `build`
-script, so the `prepare` script here (`tsdown`, driven by a self-contained
-`tsdown.config.ts` that transpiles `src/` with no project references and no type
-checking) has to produce the entry by itself. pnpm ≥10 refuses to run a git
-dependency's `prepare` until it is allowed, so the first `add` fails and the
-operator copies the printed package key into the profile's
-`pnpm-workspace.yaml`:
+**Git installs need no build authorization, and that is deliberate.** `lib/` is
+committed to this repository. A git install therefore arrives with its entry
+point already present, and pnpm has nothing to compile — so there is no
+`allowBuilds` entry to add and no code executing on the operator's machine at
+install time.
+
+Two pnpm 11 behaviours make that choice necessary rather than merely tidy:
+
+- `packageShouldBeBuilt()` returns `true` the moment a `prepare` script exists,
+  *before* it ever looks at whether the build output is present. A `prepare`-based
+  package therefore always trips the `allowBuilds` gate.
+- When pnpm does build a git dependency it runs only
+  `prepublish` / `prepack` / `publish`. **`prepare` is never executed.** So a
+  `prepare`-only package passes the gate and then builds nothing, and the failure
+  surfaces later as an unrelated-looking runtime error about a missing module.
+
+This package therefore uses `prepack` (which pnpm *does* run, and which
+`pnpm pack` and `npm publish` also run) and commits the result. After changing
+anything under `src/`, run `npm run build` and commit `lib/` with it.
+
+If you hit `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` anyway — most likely because
+you are installing a commit from before this change — the key pnpm wants is
+`name@<full tarball url>`, **not** the bare package name, and it must be quoted
+because it contains `@` and `:`:
 
 ```yaml
 allowBuilds:
-  '@audsiui/dsh-minimax-coding-plan': true
+  '@audsiui/dsh-minimax-coding-plan@https://codeload.github.com/audsiui/-audsiui-dsh-minimax-coding-plan/tar.gz/<sha>': true
 ```
 
-That authorization means **the package's code runs on the operator's machine at
-install time, outside any agent sandbox.** Only grant it for source you trust,
-and pin a commit (`github:audsiui/-audsiui-dsh-minimax-coding-plan#<sha>`). Publishing to
-npm or shipping a `pnpm pack` tarball avoids the question entirely, because the
-artifact already contains `lib/`.
+That key embeds the commit hash, so it has to be rewritten on every update. It
+also authorizes **the package's code to run on your machine at install time,
+outside any agent sandbox** — grant it only for source you trust. A
+`pnpm pack` tarball sidesteps the question entirely, because the artifact
+already contains `lib/`:
+
+```sh
+npm run build && npm pack
+dsh plugin --profile demo add ./audsiui-dsh-minimax-coding-plan-0.1.0.tgz
+```
 
 ## Layering
 
@@ -255,6 +277,11 @@ third-party install will work.
 | build | `npm run build` | the self-contained publish build, all host deps external |
 | live | `npm run smoke` | OAuth + credential store against the **live** account origin |
 | wiring | `node wiring.mjs` | `apply()` inside a real Cordis context with the real LLM runtime |
+
+**When you change `src/`, run `npm run build` and commit `lib/` in the same
+commit.** `lib/` is tracked on purpose (see the git-install note above), so a
+commit that changes the source without rebuilding leaves every git installer on
+the stale build with no error to tell them so.
 
 `smoke.ts` runs the pure modules against the real endpoint: a device-authorization
 request, one poll of an unapproved grant (exactly one HTTP request — it must not
