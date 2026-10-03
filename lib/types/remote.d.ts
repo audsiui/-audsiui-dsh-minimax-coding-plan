@@ -57,12 +57,17 @@ export declare class MinimaxRemoteService extends TypertRemoteService {
      */
     state(): RemoteAccountView;
     /**
-     * Begin a device-authorization attempt and return as soon as it is under
-     * way. The grant takes as long as the operator takes to approve it, so the
-     * surface polls {@link state} rather than holding a call open.
+     * Begin a device-authorization attempt and return once it is under way.
+     *
+     * Resolving on the transition rather than on the kickoff is the whole point:
+     * the code request is asynchronous, so a fire-and-forget return hands the
+     * surface the pre-attempt `signed-out`. The surface's poll is gated on
+     * observing `authorizing`, so it would never start, and the grant the operator
+     * approves in the browser would land with nobody re-reading for it.
+     *
      * @returns the authorizing state, including the code and verification page.
      */
-    signIn(): RemoteAccountView;
+    signIn(): Promise<RemoteAccountView>;
     /**
      * Revoke and remove the local grant.
      * @returns the signed-out state.

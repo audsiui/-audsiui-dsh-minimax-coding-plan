@@ -9,7 +9,12 @@ export interface StoredCredential {
   readonly schemaVersion: 1
   readonly clientId: string
   readonly accessToken: string
-  readonly refreshToken: string
+  /**
+   * Absent when the server issued no refresh token (RFC 8628 §3.5 makes it
+   * optional). The access token stays usable to its expiry; only refreshing is
+   * unavailable, so its absence is not a reason to read the record as signed out.
+   */
+  readonly refreshToken: string | undefined
   /** Absolute access-token expiry. */
   readonly expiresAtMs: number
   readonly scopes: readonly string[]
@@ -42,7 +47,6 @@ export async function readCredential(path: string): Promise<StoredCredential | u
   if (record.schemaVersion !== 1) return undefined
   if (record.clientId !== OAUTH_CLIENT_ID) return undefined
   if (typeof record.accessToken !== 'string' || !record.accessToken) return undefined
-  if (typeof record.refreshToken !== 'string' || !record.refreshToken) return undefined
   if (typeof record.expiresAtMs !== 'number' || !Number.isFinite(record.expiresAtMs)) return undefined
   if (!Array.isArray(record.scopes) || !record.scopes.every(scope => typeof scope === 'string')) return undefined
   if (!record.scopes.includes(OAUTH_SCOPE)) return undefined
@@ -50,7 +54,7 @@ export async function readCredential(path: string): Promise<StoredCredential | u
     schemaVersion: 1,
     clientId: OAUTH_CLIENT_ID,
     accessToken: record.accessToken,
-    refreshToken: record.refreshToken,
+    refreshToken: typeof record.refreshToken === 'string' && record.refreshToken ? record.refreshToken : undefined,
     expiresAtMs: record.expiresAtMs,
     scopes: record.scopes,
     accountId: typeof record.accountId === 'string' ? record.accountId : undefined,

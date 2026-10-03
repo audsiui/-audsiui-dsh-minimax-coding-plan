@@ -39,7 +39,6 @@ export function parseGrantPayload(payload: unknown): StoredCredential | undefine
   if (record.schemaVersion !== 1) return undefined
   if (record.clientId !== OAUTH_CLIENT_ID) return undefined
   if (typeof record.accessToken !== 'string' || !record.accessToken) return undefined
-  if (typeof record.refreshToken !== 'string' || !record.refreshToken) return undefined
   if (typeof record.expiresAtMs !== 'number' || !Number.isFinite(record.expiresAtMs)) return undefined
   if (!Array.isArray(record.scopes) || !record.scopes.every(scope => typeof scope === 'string')) return undefined
   if (!record.scopes.includes(OAUTH_SCOPE)) return undefined
@@ -48,7 +47,7 @@ export function parseGrantPayload(payload: unknown): StoredCredential | undefine
     schemaVersion: 1,
     clientId: OAUTH_CLIENT_ID,
     accessToken: record.accessToken,
-    refreshToken: record.refreshToken,
+    refreshToken: typeof record.refreshToken === 'string' && record.refreshToken ? record.refreshToken : undefined,
     expiresAtMs: record.expiresAtMs,
     scopes: record.scopes,
     accountId: typeof record.accountId === 'string' ? record.accountId : undefined,

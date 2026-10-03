@@ -272,6 +272,12 @@ let remoteSignOuts = 0;
 let remoteSignIns = 0;
 // A duck-typed account keeps this hermetic: the real one would open a
 // device-code grant against the live account origin.
+//
+// `beginSignIn` is what the Remote calls. It resolves once the code request has
+// come back — not at kickoff, and not after approval — which is the property
+// the surface's poll depends on: returning the pre-attempt `signed-out` leaves
+// the surface with nothing to re-read when the grant lands.
+let remoteTokenPolls = 0;
 const remoteAccount = {
   getState: () => remoteState,
   signIn: () => {
@@ -279,10 +285,19 @@ const remoteAccount = {
     remoteState = { status: "authorizing", userCode: "ABCD-1234", verificationUri: "https://example.test/verify", verificationUriComplete: "https://example.test/verify?code=ABCD-1234", expiresInSec: 300 };
     return Promise.resolve(remoteState);
   },
+  beginSignIn: async () => {
+    remoteSignIns++;
+    // The code request is a network round trip, so the state is still the
+    // pre-attempt one on this tick — exactly the skew that lost the race.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    remoteState = { status: "authorizing", userCode: "ABCD-1234", verificationUri: "https://example.test/verify", verificationUriComplete: "https://example.test/verify?code=ABCD-1234", expiresInSec: 300 };
+    return remoteState;
+  },
   signOut: () => { remoteSignOuts++; remoteState = { status: "signed-out" }; return Promise.resolve(remoteState); },
   resolveToken: (url) => (url === minimax.REGION_ENDPOINTS.cn.quotaOrigin && remoteToken !== undefined
     ? Promise.resolve(remoteToken)
     : Promise.resolve(undefined)),
+  tokenPolls: () => remoteTokenPolls,
 };
 
 const remoteCtx = new Context();
@@ -301,13 +316,16 @@ const wireOut = remoteService.state();
 check("signed-out state is the wire projection", wireOut.status === "signed-out" && wireOut.accountId === null);
 check("the wire projection never carries a token", !JSON.stringify(wireOut).includes("accessToken"));
 
-// signIn returns as soon as the attempt is under way. The device grant takes as
-// long as the operator takes, so awaiting it would hold the call open for the
-// whole approval conversation.
-const authorizing = remoteService.signIn();
-check("signIn returns without waiting for approval", authorizing.status === "authorizing", authorizing.status);
+// signIn resolves on the transition into `authorizing` — not at kickoff, and not
+// after approval. The device grant takes as long as the operator takes, so
+// holding the call open for the whole approval conversation would be wrong; but
+// returning the pre-attempt `signed-out` is wrong too, because the surface's
+// poll is gated on observing `authorizing`.
+const authorizing = await remoteService.signIn();
+check("signIn resolves on the authorizing transition, not on kickoff", authorizing.status === "authorizing", authorizing.status);
 check("the projection carries the code and the complete page",
   authorizing.userCode === "ABCD-1234" && String(authorizing.verificationUri).includes("ABCD-1234"));
+check("signIn does not wait for the approval", remoteAccount.tokenPolls() === 0, String(remoteAccount.tokenPolls()));
 await new Promise(resolve => setTimeout(resolve, 0));
 check("signIn started exactly one attempt", remoteSignIns === 1, String(remoteSignIns));
 
@@ -336,6 +354,73 @@ const whileOut = await remoteService.quota();
 check("quota short-circuits while signed out",
   whileOut.windows.length === 0 && whileOut.authExpired === false);
 await remoteCtx.stop?.();
+
+// --- The sign-in transition, against the real account service ------------------
+//
+// The bug this pins down: `signIn` used to return at kickoff, so the state a
+// surface read immediately afterwards was the pre-attempt `signed-out`. A
+// surface whose poll is gated on observing `authorizing` then never polls, and
+// the grant the operator approves lands with nothing watching for it — the page
+// reads "signed out" forever, with a browser window that closed successfully.
+const deviceDir = await mkdtemp(join(tmpdir(), "minimax-device-"));
+let tokenCalls = 0;
+let approved = false;
+const deviceAccount = new minimax.MinimaxAccount(new Context(), {
+  endpoints: minimax.REGION_ENDPOINTS.cn,
+  region: "cn",
+  credentialsPath: join(deviceDir, "grant.json"),
+  openBrowser: false,
+  client: {
+    // Defer rather than resolve instantly, so the poll loop cannot run ahead of
+    // the assertion below and make a timing property look like it was violated.
+    sleep: () => new Promise(resolve => setTimeout(resolve, 0)),
+    now: () => Date.now(),
+    fetchImpl: async (url) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/oauth2/device/code") {
+        return jsonResponse({
+          device_code: "dev-code", user_code: "ABCD-1234",
+          verification_uri: "https://example.test/verify",
+          verification_uri_complete: "https://example.test/verify?code=ABCD-1234",
+          expires_in: 300, interval: 1,
+        });
+      }
+      if (path === "/oauth2/token") {
+        tokenCalls++;
+        if (!approved) {
+          return jsonResponse({ error: "authorization_pending" }, 400);
+        }
+        // A minimal but conformant RFC 6749 §5.1 token response: no `refresh_token`
+        // (RFC 8628 §3.5 makes it optional) and no echoed `scope` (which the spec
+        // defines as identical to the requested scope). Both used to be rejected,
+        // throwing away a perfectly usable grant.
+        return jsonResponse({
+          access_token: "at-1", token_type: "Bearer", expires_in: 3600,
+        });
+      }
+      throw new Error(`unexpected request to ${url}`);
+    },
+  },
+});
+
+const reached = await deviceAccount.beginSignIn();
+check("beginSignIn resolves on the authorizing transition", reached.status === "authorizing", reached.status);
+check("beginSignIn carries the code the operator has to type", reached.userCode === "ABCD-1234", reached.userCode);
+// The property that matters is not "how many polls have happened" but "what the
+// caller was handed": an attempt that is genuinely under way, while approval is
+// still outstanding. Resolving on `signed-out` instead is what left the surface
+// with nothing to re-read.
+check("beginSignIn returns with approval still outstanding",
+  reached.status === "authorizing" && deviceAccount.getState().status === "authorizing",
+  deviceAccount.getState().status);
+
+// Now the operator approves, and the loop is already in place to notice.
+approved = true;
+await new Promise(resolve => setTimeout(resolve, 20));
+const settled = deviceAccount.getState();
+check("the loop picks the grant up after approval", settled.status === "authenticated", settled.status);
+check("a token without a refresh token or echoed scope is still accepted", tokenCalls > 0, `${tokenCalls} poll(s)`);
+check("the stored record keeps the grant", (await deviceAccount.resolveToken(minimax.REGION_ENDPOINTS.cn.quotaOrigin)) === "at-1");
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

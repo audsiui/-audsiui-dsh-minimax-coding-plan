@@ -13,11 +13,6 @@ export interface MinimaxSurfaceState {
 /**
  * Subscribe to the Host's account and usage state.
  *
- * The device grant takes as long as the operator takes to approve it, so while
- * the status is `authorizing` this polls `state` and stops the moment it is
- * not. The timer is cleared on unmount, so a surface that goes away mid-wait
- * leaves nothing running.
- *
  * @param api - the Remote-backed loader and transitions from the slot.
  * @returns the state a component renders from.
  */

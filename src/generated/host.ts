@@ -82,7 +82,7 @@ export const TYPERT = {
         typeSymbol: '@audsiui/dsh-minimax-coding-plan/types#RemoteAccountView',
         create: _audsiui_dsh_minimax_coding_plan_minimax_signIn_result$schema,
       },
-      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":141,"column":3},
+      sourceLocation: {"file":"packages/@audsiui/dsh-minimax-coding-plan/src/remote.ts","line":146,"column":9},
     },
     {
       id: '@audsiui/dsh-minimax-coding-plan#minimax/signOut',
@@ -131,6 +131,13 @@ export const TYPERT = {
             "signature": "getState(): MinimaxAccountState",
             "summary": "Read the current account state.",
             "jsDoc": "/** Read the current account state. */"
+          },
+          {
+            "kind": "method",
+            "name": "beginSignIn",
+            "signature": "async beginSignIn(): Promise<MinimaxAccountState>",
+            "summary": "Begin a device-authorization attempt and resolve once it is actually under way, returning the `authorizing` state that carries the code.",
+            "jsDoc": "/**\n * Begin a device-authorization attempt and resolve once it is actually under\n * way, returning the `authorizing` state that carries the code.\n *\n * This is deliberately not {@link signIn}. `signIn` settles only once the\n * operator finishes approving, which is far too late to hand a surface\n * something to render; and the code request is asynchronous, so reading the\n * state at kickoff returns the pre-attempt `signed-out`. A surface whose poll\n * is gated on observing `authorizing` then never starts polling, and the grant\n * lands with nobody watching for it.\n *\n * @returns the authorizing state, or the state after a fast failure.\n */"
           },
           {
             "kind": "method",
@@ -186,9 +193,9 @@ export const TYPERT = {
           {
             "kind": "method",
             "name": "signIn",
-            "signature": "@Remote('signIn') signIn(): RemoteAccountView",
-            "summary": "Begin a device-authorization attempt and return as soon as it is under way.",
-            "jsDoc": "/**\n * Begin a device-authorization attempt and return as soon as it is under\n * way. The grant takes as long as the operator takes to approve it, so the\n * surface polls {@link state} rather than holding a call open.\n * @returns the authorizing state, including the code and verification page.\n */"
+            "signature": "@Remote('signIn') async signIn(): Promise<RemoteAccountView>",
+            "summary": "Begin a device-authorization attempt and return once it is under way.",
+            "jsDoc": "/**\n * Begin a device-authorization attempt and return once it is under way.\n *\n * Resolving on the transition rather than on the kickoff is the whole point:\n * the code request is asynchronous, so a fire-and-forget return hands the\n * surface the pre-attempt `signed-out`. The surface's poll is gated on\n * observing `authorizing`, so it would never start, and the grant the operator\n * approves in the browser would land with nobody re-reading for it.\n *\n * @returns the authorizing state, including the code and verification page.\n */"
           },
           {
             "kind": "method",

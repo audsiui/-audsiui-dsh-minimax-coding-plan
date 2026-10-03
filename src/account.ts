@@ -70,6 +70,9 @@ export class MinimaxAccount extends Service {
   private state: MinimaxAccountState = { status: 'signed-out' }
   private signInAttempt: Promise<MinimaxAccountState> | undefined
   private refreshInFlight: Promise<StoredCredential> | undefined
+  /** Resolves once the in-flight attempt has reached `authorizing` or failed. */
+  private attemptReachedStart: Promise<void> | undefined
+  private markAttemptReachedStart: (() => void) | undefined
 
   /** @param ctx - context owning this account. @param options - endpoints, storage, and test seams. */
   constructor(ctx: Context, options: MinimaxAccountOptions) {
@@ -80,6 +83,34 @@ export class MinimaxAccount extends Service {
   /** Read the current account state. */
   getState(): MinimaxAccountState {
     return this.state
+  }
+
+  /**
+   * Begin a device-authorization attempt and resolve once it is actually under
+   * way, returning the `authorizing` state that carries the code.
+   *
+   * This is deliberately not {@link signIn}. `signIn` settles only once the
+   * operator finishes approving, which is far too late to hand a surface
+   * something to render; and the code request is asynchronous, so reading the
+   * state at kickoff returns the pre-attempt `signed-out`. A surface whose poll
+   * is gated on observing `authorizing` then never starts polling, and the grant
+   * lands with nobody watching for it.
+   *
+   * @returns the authorizing state, or the state after a fast failure.
+   */
+  async beginSignIn(): Promise<MinimaxAccountState> {
+    this.attemptReachedStart = new Promise<void>((resolve) => {
+      this.markAttemptReachedStart = resolve
+    })
+    this.signInAttempt ??= this.runSignIn().finally(() => {
+      this.signInAttempt = undefined
+      // A failure before the code request settles must not leave a caller
+      // waiting on a transition that is never going to happen.
+      this.markAttemptReachedStart?.()
+      this.markAttemptReachedStart = undefined
+    })
+    await this.attemptReachedStart
+    return this.getState()
   }
 
   /**
@@ -115,7 +146,20 @@ export class MinimaxAccount extends Service {
       this.state = { status: 'authenticated', accountId: stored.accountId, expiresAtMs: stored.expiresAtMs }
       return stored.accessToken
     }
-    return (await this.refreshStored(stored)).accessToken
+    if (stored.refreshToken === undefined) {
+      // The access token is spent and no refresh token was issued (RFC 8628
+      // §3.5 makes it optional), so there is no way to mint another. Retire the
+      // record and report signed out, rather than sending an expired — or
+      // empty — bearer to the inference endpoint.
+      this.ctx.logger.warn(
+        'minimax-account: the access token expired and no refresh token was issued; sign in again',
+      )
+      await clearGrant(this.ctx, this.options.credentialsPath)
+      this.state = { status: 'signed-out' }
+      this.ctx.emit('minimax-account/signed-out')
+      return undefined
+    }
+    return (await this.refreshStored(stored, stored.refreshToken)).accessToken
   }
 
   /**
@@ -144,7 +188,14 @@ export class MinimaxAccount extends Service {
     const stored = await readGrant(this.ctx, this.options.credentialsPath)
     if (stored) {
       try {
-        await revokeRefreshToken(this.options.endpoints, stored.refreshToken, this.options.client)
+        if (stored.refreshToken === undefined) {
+          // Nothing was issued to revoke (RFC 8628 §3.5 makes it optional).
+          // The local grant still has to go, so this is not a failure.
+          this.ctx.logger.info('minimax-account: no refresh token was issued; removing the local grant without a revocation call')
+        }
+        else {
+          await revokeRefreshToken(this.options.endpoints, stored.refreshToken, this.options.client)
+        }
       }
       catch (error) {
         this.ctx.logger.warn('minimax-account: revocation failed; removing the local grant anyway: %o', error)
@@ -165,6 +216,7 @@ export class MinimaxAccount extends Service {
     }
     catch (error) {
       this.state = { status: 'signed-out' }
+      this.markAttemptReachedStart?.()
       throw error
     }
 
@@ -175,6 +227,8 @@ export class MinimaxAccount extends Service {
       verificationUriComplete: authorization.verificationUriComplete,
       expiresInSec: authorization.expiresInSec,
     }
+    // The surface is waiting on exactly this transition; see `beginSignIn`.
+    this.markAttemptReachedStart?.()
     this.ctx.logger.info(
       'minimax-account: open %s and enter code %s to finish sign-in (valid for %ds)',
       authorization.verificationUriComplete ?? authorization.verificationUri,
@@ -198,11 +252,18 @@ export class MinimaxAccount extends Service {
     }
   }
 
-  /** Refresh one stored grant, collapsing concurrent callers onto one request. */
-  private async refreshStored(stored: StoredCredential): Promise<StoredCredential> {
+  /**
+   * Refresh one stored grant, collapsing concurrent callers onto one request.
+   *
+   * @param stored - the record being refreshed, for the fields carried forward.
+   * @param refreshToken - the non-undefined refresh token; `resolveToken` has
+   *   already handled the no-refresh-token case, and taking it as a parameter
+   *   keeps that guarantee visible here rather than re-asserted.
+   */
+  private async refreshStored(stored: StoredCredential, refreshToken: string): Promise<StoredCredential> {
     this.refreshInFlight ??= (async () => {
       try {
-        const grant = await refreshAccessToken(this.options.endpoints, stored.refreshToken, this.options.client)
+        const grant = await refreshAccessToken(this.options.endpoints, refreshToken, this.options.client)
         await writeGrant(this.ctx, this.options.credentialsPath, grant, this.options.region)
         const next: StoredCredential = {
           schemaVersion: 1,

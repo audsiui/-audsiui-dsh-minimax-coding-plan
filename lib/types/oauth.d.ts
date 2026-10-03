@@ -19,7 +19,15 @@ export interface DeviceAuthorization {
 /** One successful token response, already normalized for storage. */
 export interface TokenGrant {
     readonly accessToken: string;
-    readonly refreshToken: string;
+    /**
+     * Absent when the server issued none.
+     *
+     * RFC 8628 §3.5 makes the refresh token *optional* in a device-flow token
+     * response, so requiring one throws away a working access token over a field
+     * the protocol says may not be there. Without it the grant is still usable
+     * until the access token expires; only the refresh path is unavailable.
+     */
+    readonly refreshToken: string | undefined;
     /** Absolute access-token expiry. */
     readonly expiresAtMs: number;
     /** Scopes granted; the provider requires {@link OAUTH_SCOPE} to be present. */
@@ -58,10 +66,17 @@ export declare function requestDeviceAuthorization(endpoints: RegionEndpoints, o
 /**
  * Poll until the operator approves, the grant is denied, or it expires.
  *
- * The server signals a not-yet-approved attempt either with HTTP 400 plus
- * `authorization_pending` (RFC 8628) or with HTTP 200 plus a `status` field
- * (`pending` / `slow_down` / `denied`); both shapes are accepted because this
- * account service uses the second one.
+ * The server signals a not-yet-approved attempt with HTTP 400 plus
+ * `authorization_pending` (RFC 8628 §3.5), which is what the account origin
+ * actually does — verified against `account.minimax.cn`, where the first poll
+ * answers `400 {"error":"authorization_pending"}` and an over-eager second one
+ * answers `400 {"error":"slow_down"}`. A `200` body carrying a `status` field is
+ * also accepted, because nothing in the protocol forbids a server from using it
+ * and rejecting one would be a guess.
+ *
+ * The first poll waits out the server's advertised `interval` rather than firing
+ * immediately: polling inside the window earns a `slow_down`, which costs a
+ * five-second penalty on top of the wait.
  *
  * @param endpoints - region origins.
  * @param authorization - pending authorization from {@link requestDeviceAuthorization}.

@@ -51,10 +51,27 @@ export declare class MinimaxAccount extends Service {
     private state;
     private signInAttempt;
     private refreshInFlight;
+    /** Resolves once the in-flight attempt has reached `authorizing` or failed. */
+    private attemptReachedStart;
+    private markAttemptReachedStart;
     /** @param ctx - context owning this account. @param options - endpoints, storage, and test seams. */
     constructor(ctx: Context, options: MinimaxAccountOptions);
     /** Read the current account state. */
     getState(): MinimaxAccountState;
+    /**
+     * Begin a device-authorization attempt and resolve once it is actually under
+     * way, returning the `authorizing` state that carries the code.
+     *
+     * This is deliberately not {@link signIn}. `signIn` settles only once the
+     * operator finishes approving, which is far too late to hand a surface
+     * something to render; and the code request is asynchronous, so reading the
+     * state at kickoff returns the pre-attempt `signed-out`. A surface whose poll
+     * is gated on observing `authorizing` then never starts polling, and the grant
+     * lands with nobody watching for it.
+     *
+     * @returns the authorizing state, or the state after a fast failure.
+     */
+    beginSignIn(): Promise<MinimaxAccountState>;
     /**
      * Sign in through the device-authorization grant, or join the attempt
      * already running. The first caller owns the browser prompt and the polling
@@ -88,7 +105,14 @@ export declare class MinimaxAccount extends Service {
     signOut(): Promise<MinimaxAccountState>;
     /** Run one device authorization end to end. */
     private runSignIn;
-    /** Refresh one stored grant, collapsing concurrent callers onto one request. */
+    /**
+     * Refresh one stored grant, collapsing concurrent callers onto one request.
+     *
+     * @param stored - the record being refreshed, for the fields carried forward.
+     * @param refreshToken - the non-undefined refresh token; `resolveToken` has
+     *   already handled the no-refresh-token case, and taking it as a parameter
+     *   keeps that guarantee visible here rather than re-asserted.
+     */
     private refreshStored;
     /**
      * Accept only the origins this plugin itself talks to.

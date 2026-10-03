@@ -4,7 +4,12 @@ export interface StoredCredential {
     readonly schemaVersion: 1;
     readonly clientId: string;
     readonly accessToken: string;
-    readonly refreshToken: string;
+    /**
+     * Absent when the server issued no refresh token (RFC 8628 §3.5 makes it
+     * optional). The access token stays usable to its expiry; only refreshing is
+     * unavailable, so its absence is not a reason to read the record as signed out.
+     */
+    readonly refreshToken: string | undefined;
     /** Absolute access-token expiry. */
     readonly expiresAtMs: number;
     readonly scopes: readonly string[];
