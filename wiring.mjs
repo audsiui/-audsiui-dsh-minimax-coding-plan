@@ -256,6 +256,61 @@ check("one entry per model family, two windows each", parsed.windows.length === 
 check("the models are kept apart", new Set(parsed.windows.map(w => w.model)).size === 2);
 check("fetchedAt is the injected clock", parsed.fetchedAtMs === 1_700_000_000_000);
 
+// The two currencies. `general` sends -1 for every count because it is metered
+// purely in percentages; `video` sends real counts. Dropping the counts would
+// have left the video entry drawable only as `0% / 100%`, which is both less
+// informative and not what the service is reporting.
+check("a -1 count is reported as absent, not as a count",
+  generalWeekly.totalCount === undefined && generalWeekly.usedCount === undefined
+    && generalWeekly.remainsCount === undefined,
+  `${generalWeekly.totalCount}/${generalWeekly.usedCount}/${generalWeekly.remainsCount}`);
+check("a real count survives parsing",
+  videoWeekly.totalCount === 21 && videoWeekly.usedCount === 0 && videoWeekly.remainsCount === 21,
+  `${videoWeekly.totalCount}/${videoWeekly.usedCount}/${videoWeekly.remainsCount}`);
+check("a metered window keeps its percentage pair too",
+  videoWeekly.usedPercent === 0 && videoWeekly.totalPercent === 100,
+  `${videoWeekly.usedPercent}/${videoWeekly.totalPercent}`);
+
+// `status: 3` is what MiniMax's own client maps to "unlimited". The mapping
+// was removed from this package once on the strength of a guess that a -1
+// count implied it — a different field answering a different question — and
+// then restored when the client was read for the real rule. This pins it.
+check("a status of 1 is not unlimited", generalWeekly.unlimited === false && videoWeekly.unlimited === false);
+const unmetered = await minimax.fetchQuota(quotaFor({
+  model_remains: [{
+    model_name: "general",
+    current_interval_total_percent: "100%",
+    current_interval_used_percent: "0%",
+    current_interval_status: 3,
+    current_weekly_total_percent: "100%",
+    current_weekly_used_percent: "0%",
+    current_weekly_status: 3,
+  }],
+  base_resp: { status_code: 0 },
+}));
+check("a status of 3 is unlimited, on the window that reported it",
+  unmetered.windows.every(w => w.unlimited === true)
+  && unmetered.windows.every(w => w.present === true),
+  JSON.stringify(unmetered.windows.map(w => [w.window, w.unlimited])));
+// The statuses are per window: an interval at 3 and a weekly at 1 must not
+// collapse into one flag for the model.
+const mixed = await minimax.fetchQuota(quotaFor({
+  model_remains: [{
+    model_name: "general",
+    current_interval_total_percent: "100%",
+    current_interval_used_percent: "0%",
+    current_interval_status: 3,
+    current_weekly_total_percent: "150%",
+    current_weekly_used_percent: "6%",
+    current_weekly_status: 1,
+  }],
+  base_resp: { status_code: 0 },
+}));
+check("unlimited is per window, not per model",
+  mixed.windows.find(w => w.window === "interval").unlimited === true
+  && mixed.windows.find(w => w.window === "weekly").unlimited === false,
+  JSON.stringify(mixed.windows.map(w => [w.window, w.unlimited])));
+
 // A seconds-valued reset is still lifted, since the service is not consistent
 // about the unit and the older fixture proved the seconds form exists.
 const seconds = await minimax.fetchQuota(quotaFor({
@@ -333,6 +388,183 @@ await minimax.fetchQuota({
 check("the grant is sent as Authorization: Bearer", seenAuthorization === "Bearer quota-token", `${seenAuthorization}`);
 check("the grant is not sent as a bare token header", seenBareToken === null, `${seenBareToken}`);
 
+// ---------------------------------------------------------------------------
+// The account and plan read.
+//
+// Two agent-origin reads, taken from MiniMax's own desktop client rather than
+// guessed at. The fixtures below are the shapes that client parses, captured
+// from live reads against a real grant.
+// ---------------------------------------------------------------------------
+
+// `GET /v1/api/user/info` answers `statusInfo.code`, not `base_resp`. A reader
+// that only knew the open platform's envelope would render a 400 as a blank
+// account card rather than as the parameter error it is.
+const USER_INFO = {
+  data: {
+    userInfo: {
+      name: "MiniMax381968",
+      realUserID: "518439847904509957",
+      userID: "BP6k7E4p4O2m",
+      phone: "18272399478",
+      email: "",
+      vipInfo: { type: 0, expireTime: 0 },
+    },
+    relation: 0,
+  },
+  statusInfo: { code: 0, httpCode: 0, message: "成功", serviceTime: 1_799_009_245 },
+};
+
+// `POST /matrix/api/v1/commerce/get_membership_info` answers `base_resp`.
+const MEMBERSHIP = {
+  plan_type: 3,
+  // Empty on an account that *is* on a token plan, which is why the tier name
+  // is read from `token_plan_tier` and not from here.
+  plan_name: "",
+  next_plan_name: "",
+  will_renewal: false,
+  expires_at: 1822348800000,
+  has_token_plan: true,
+  token_plan_tier: "Max",
+  token_plan_expires_at: 1822348800000,
+  upgrade_action: "Year",
+  is_migrated_to_op: true,
+  op_group_id: "2061984393274073643",
+  subscription_type: "token_plan",
+  op_credit_summary: {
+    total_remaining_amount: "9402.216",
+    purchased_remaining_amount: "2912.216",
+    free_remaining_amount: "6490",
+  },
+  base_resp: { status_code: 0, status_msg: "success" },
+};
+
+/** A transport that answers by URL, so the two reads stay distinguishable. */
+const planFetch = (routes, seen = []) => async (url, init) => {
+  seen.push(url);
+  for (const [fragment, body] of routes) {
+    if (url.includes(fragment)) return typeof body === "function" ? body() : jsonResponse(body);
+  }
+  return jsonResponse({ base_resp: { status_code: 0 } }, 404);
+};
+const planFor = (routes, seen) => ({
+  token: "plan-token",
+  endpoints: minimax.REGION_ENDPOINTS.cn,
+  fetchImpl: planFetch(routes, seen),
+});
+
+const planSeen = [];
+const plan = await minimax.fetchPlan(planFor(
+  [["/v1/api/user/info", USER_INFO], ["/commerce/get_membership_info", MEMBERSHIP]],
+  planSeen,
+));
+check("the account name comes from the account service", plan.accountName === "MiniMax381968", `${plan.accountName}`);
+check("the stable account id is preferred over the public handle",
+  plan.accountId === "518439847904509957", `${plan.accountId}`);
+check("the plan tier is read from token_plan_tier, not the empty plan_name",
+  plan.tier === "Max", `${plan.tier}`);
+check("the plan expiry is carried through",
+  plan.planExpiresAtMs === 1822348800000, `${plan.planExpiresAtMs}`);
+check("the subscription kind is reported", plan.subscriptionType === "token_plan", `${plan.subscriptionType}`);
+check("a complete plan read reports no error", plan.error === undefined, `${plan.error}`);
+
+// The two reads live on different hosts, and the account one is a GET that
+// insists on a query string. Neither fact is visible from the other.
+check("the account and plan reads hit different origins",
+  planSeen.some(u => u.startsWith("https://agent.minimax.cn/v1/api/user/info"))
+  && planSeen.some(u => u.startsWith("https://agent.minimax.cn/matrix/api/v1/commerce/get_membership_info")),
+  planSeen.map(u => u.split("?")[0]).join("  "));
+const userInfoUrl = planSeen.find(u => u.includes("/v1/api/user/info"));
+check("the account read carries the query it requires",
+  userInfoUrl.includes("device_platform=web") && userInfoUrl.includes("version_code="), userInfoUrl);
+// MiniMax's client sends seventeen parameters here; fifteen of them are dropped
+// by the server either way, and the two that matter are the only ones sent —
+// this module has no screen size, browser name or device id to invent.
+check("the account read does not fabricate client telemetry",
+  !/screen_width|browser_name|os_name|device_id|uuid/.test(userInfoUrl), userInfoUrl);
+
+// The plan body and the quota body disagree about the credit balance, and
+// nothing in either says which one to display. Carrying either would mean
+// picking one and presenting it as the balance.
+check("no credit balance is reported, because the two fields disagree",
+  !("opcreditBalance" in plan) && !("creditBalance" in plan) && !("creditTotal" in plan),
+  Object.keys(plan).join(","));
+
+// --- One failing read must not blank the other --------------------------------
+//
+// The bug this pins down: `fetchPlan` documents that neither read can blank the
+// other, and then threw on any failure at all — discarding the half that had
+// already answered. A plan outage blanked the account name, and an account
+// outage blanked the tier name, which is exactly the coupling the split was
+// supposed to remove.
+
+const accountDown = await minimax.fetchPlan(planFor([
+  ["/v1/api/user/info", () => jsonResponse({ statusInfo: { code: 2, message: "请求异常，请检查请求参数" } }, 400)],
+  ["/commerce/get_membership_info", MEMBERSHIP],
+]));
+check("a failing account read still lets the plan through",
+  accountDown.tier === "Max" && accountDown.planExpiresAtMs === 1822348800000
+  && accountDown.accountName === undefined,
+  `tier=${accountDown.tier} name=${accountDown.accountName}`);
+check("the surviving read is not reported as a failure of its own",
+  accountDown.error === undefined || typeof accountDown.error === "string");
+
+// The account read's own error envelope, since it is the one the other two
+// reads do not use: a non-zero `statusInfo.code` behind an HTTP 400 is a
+// business answer, and its code and wording have to survive into the message.
+check("a non-zero code inside the account envelope reaches the message",
+  typeof accountDown.error === "string"
+  && accountDown.error.includes("2") && accountDown.error.includes("请求参数"),
+  accountDown.error);
+
+const planDown = await minimax.fetchPlan(planFor([
+  ["/v1/api/user/info", USER_INFO],
+  ["/commerce/get_membership_info", () => jsonResponse({ base_resp: { status_code: 30700, status_msg: "region-restriction" } })],
+]));
+check("a failing plan read still lets the account through",
+  planDown.accountName === "MiniMax381968" && planDown.tier === undefined,
+  `name=${planDown.accountName} tier=${planDown.tier}`);
+check("a non-zero base_resp on the plan read reaches the message",
+  typeof planDown.error === "string"
+  && planDown.error.includes("30700") && planDown.error.includes("region-restriction"),
+  planDown.error);
+
+let planBothDown;
+try {
+  await minimax.fetchPlan(planFor([
+    ["/v1/api/user/info", () => jsonResponse({ statusInfo: { code: 2 } }, 400)],
+    ["/commerce/get_membership_info", () => jsonResponse({ base_resp: { status_code: 30700 } })],
+  ]));
+} catch (e) { planBothDown = e; }
+check("two failures throw, because there is nothing left to draw",
+  planBothDown instanceof minimax.PlanNetworkError, planBothDown?.message);
+
+let planAuthError;
+try {
+  await minimax.fetchPlan({
+    token: "plan-token",
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    fetchImpl: async () => jsonResponse({}, 401),
+  });
+} catch (e) { planAuthError = e; }
+check("a 401 is the grant being rejected, not a network fault",
+  planAuthError instanceof minimax.PlanAuthError, `${planAuthError?.name}: ${planAuthError?.message}`);
+
+// The grant travels the same way on the agent origin. Measured against the live
+// endpoint across ten combinations: only `Authorization: Bearer` passes, and the
+// request signatures MiniMax's renderer computes are not required.
+let planAuthHeader;
+await minimax.fetchPlan({
+  token: "plan-token",
+  endpoints: minimax.REGION_ENDPOINTS.cn,
+  fetchImpl: async (_url, init) => {
+    planAuthHeader = new Headers(init.headers).get("authorization");
+    return jsonResponse(USER_INFO);
+  },
+});
+check("the grant is sent as Authorization: Bearer on the agent origin too",
+  planAuthHeader === "Bearer plan-token", `${planAuthHeader}`);
+
+
 // The Remote service: the browser half's only route to this process.
 //
 // What matters is that it projects rather than exposes. A surface must be able
@@ -373,23 +605,31 @@ const remoteAccount = {
 };
 
 const remoteCtx = new Context();
-const remoteService = new minimax.MinimaxRemoteService(remoteCtx, {
-  account: remoteAccount,
-  endpoints: minimax.REGION_ENDPOINTS.cn,
-  region: "cn",
-  fetchImpl: async () => jsonResponse({
+// Routed by URL, because the service now reads two origins: the quota and plan
+// reads must be answerable independently or a test of one is really a test of
+// whichever branch happens to match first.
+const remoteFetch = planFetch([
+  ["/backend/account/token_plan/remains_percent", {
     model_remains: [{
       model_name: "general",
       current_weekly_total_percent: "100%", current_weekly_used_percent: "12%",
       current_weekly_total_count: 10, current_weekly_used_count: 1, current_weekly_status: 1,
     }],
     base_resp: { status_code: 0 },
-  }),
+  }],
+  ["/v1/api/user/info", USER_INFO],
+  ["/commerce/get_membership_info", MEMBERSHIP],
+]);
+const remoteService = new minimax.MinimaxRemoteService(remoteCtx, {
+  account: remoteAccount,
+  endpoints: minimax.REGION_ENDPOINTS.cn,
+  region: "cn",
+  fetchImpl: remoteFetch,
 });
 check("Remote service binds its namespace", remoteService.typertRemote?.namespace === "minimax",
   remoteService.typertRemote?.namespace);
 check("every @Remote method is reachable on the instance",
-  ["state", "signIn", "signOut", "quota"].every(m => typeof remoteService[m] === "function"));
+  ["state", "signIn", "signOut", "quota", "plan"].every(m => typeof remoteService[m] === "function"));
 
 const wireOut = remoteService.state();
 check("signed-out state is the wire projection", wireOut.status === "signed-out" && wireOut.accountId === null);
@@ -420,6 +660,72 @@ check("quota reads through the Remote", remoteWeekly?.usedPercent === 12, JSON.s
 check("the Remote keeps the model identity on the wire", remoteWeekly?.model === "general", remoteWeekly?.model);
 check("quota never returns the grant", !JSON.stringify(grant).includes("remote-grant"));
 check("a successful quota read is not flagged auth-expired", grant.authExpired === false && grant.error === null);
+
+// The account id used to be the one the OAuth grant reported, and there is
+// none: the access token is an opaque string rather than a JWT, so no claim
+// exists to read. It now comes from the account service instead, which is why
+// `state()` and `plan()` are two reads rather than one.
+const planView = await remoteService.plan();
+check("plan reads the account and tier through the Remote",
+  planView.accountName === "MiniMax381968" && planView.tier === "Max",
+  `${planView.accountName} / ${planView.tier}`);
+check("plan carries the account id the grant could not",
+  planView.accountId === "518439847904509957", `${planView.accountId}`);
+check("plan never returns the grant", !JSON.stringify(planView).includes("remote-grant"));
+check("a successful plan read reports no error", planView.error === null, `${planView.error}`);
+
+// The two reads are separate methods, so a plan outage cannot reach the usage
+// figures and vice versa. A plan read that reports a failure must not also claim
+// the grant is expired, or the surface would send the operator to re-sign-in on
+// the strength of a plan-only fault.
+const planOnly = await (async () => {
+  const ctx2 = new Context();
+  const svc = new minimax.MinimaxRemoteService(ctx2, {
+    account: remoteAccount,
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    fetchImpl: planFetch([
+      ["/backend/account/token_plan/remains_percent", { model_remains: [], base_resp: { status_code: 0 } }],
+      ["/v1/api/user/info", USER_INFO],
+      ["/commerce/get_membership_info", () => jsonResponse({ base_resp: { status_code: 30700, status_msg: "region-restriction" } })],
+    ]),
+  });
+  return { plan: await svc.plan(), quota: await svc.quota() };
+})();
+check("a plan-only failure leaves the usage figures alone",
+  planOnly.plan.tier === null && planOnly.plan.error !== null
+  && planOnly.quota.error === null && planOnly.quota.authExpired === false,
+  `plan.error=${planOnly.plan.error} quota.error=${planOnly.quota.error}`);
+
+// A plan read that throws must not escape as `gateway/internal`, which the
+// surface cannot tell from its own defect.
+let planThrew;
+try {
+  const ctx3 = new Context();
+  const svc = new minimax.MinimaxRemoteService(ctx3, {
+    account: remoteAccount,
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    fetchImpl: async () => { throw new Error("socket hang up"); },
+  });
+  planThrew = await svc.plan();
+} catch (e) { planThrew = e; }
+check("an unreachable plan service is reported in the record, not thrown",
+  !(planThrew instanceof Error) && planThrew.error !== null, planThrew?.error);
+
+// Short-circuited while signed out, like the usage read: asking for a plan with
+// no grant would only produce a message the surface already knows.
+const signedOutCtx = new Context();
+const signedOutService = new minimax.MinimaxRemoteService(signedOutCtx, {
+  account: { getState: () => ({ status: "signed-out" }), resolveToken: () => Promise.resolve(undefined) },
+  endpoints: minimax.REGION_ENDPOINTS.cn,
+  region: "cn",
+  fetchImpl: () => { throw new Error("must not be called without a grant"); },
+});
+const signedOutPlan = await signedOutService.plan();
+check("the plan read short-circuits while signed out",
+  signedOutPlan.accountName === null && signedOutPlan.tier === null && signedOutPlan.error === "not signed in",
+  `${signedOutPlan.error}`);
 
 // A rejected grant travels as a flag rather than a thrown RemoteError: the
 // surface has to be able to offer sign-in, not report a generic failure.

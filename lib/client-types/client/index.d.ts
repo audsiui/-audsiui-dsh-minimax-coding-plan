@@ -1,5 +1,5 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-import type { RemoteAccountView, RemoteQuotaView } from '../types.ts';
+import type { RemoteAccountView, RemotePlanView, RemoteQuotaView } from '../types.ts';
 import { type MinimaxLocaleKey } from './locales.ts';
 declare module '@deepseek-ai/dsh-client-ui-slots' {
     interface LocaleNamespaceMap {
@@ -26,6 +26,7 @@ export declare const inject: string[];
  */
 export interface MinimaxSurfaceApi {
     loadState: () => Promise<RemoteAccountView>;
+    loadPlan: () => Promise<RemotePlanView>;
     loadQuota: () => Promise<RemoteQuotaView>;
     startSignIn: () => Promise<void>;
     signOut: () => Promise<void>;

@@ -14,10 +14,14 @@
  * Radius scale and the settings-card material come from `docs/ui-radius.zh.md`
  * (:30-37 for the scale, :96-102 for the card). Motion rides the theme's
  * duration and curve tokens rather than local values (`web-styling.zh.md:11`).
+ *
+ * Nesting depth, so the insets are not all the same colour: the settings card
+ * resolves to `--dsw-alias-bg-layer-2` (`ui-theme/src/styles/base.css:25`), and
+ * the layer scale runs 1 → 2 → 3 from lightest to darkest in the dark theme.
+ * So a panel inset inside the card takes layer 3, and a meter's track — drawn
+ * directly on the card — also takes layer 3.
  */
 
-/* The settings card. R20 + 0.5px stroke on the settings fill — ui-radius.zh.md
-   :96-102, and the theme resolves stroke to `--dsw-alias-border-l4`. */
 .page {
   display: flex;
   flex-direction: column;
@@ -91,15 +95,62 @@
   letter-spacing: 4px;
 }
 
+/* The identity panel: who is signed in, and what they bought. It is the one
+   thing on the page that answers "is this the account I meant", so it is a
+   panel of its own rather than another row of the facts grid. */
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-radius: var(--dsw-radius-lg);
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-3);
+}
+
+.identityHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.identityNames {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.accountName {
+  margin: 0;
+  font: var(--dsw-font-m-18);
+  color: var(--dsw-alias-label-primary);
+  word-break: break-word;
+}
+
+/* An account id is an identifier, not prose, so it is set in the code stack
+   and given tabular figures to stay aligned with itself when it wraps. */
+.accountId {
+  margin: 0;
+  font-family: var(--ds-font-family-code);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--dsw-alias-label-tertiary);
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
+}
+
 .facts {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 12px 20px;
   margin: 0;
 }
 
 .factLabel {
-  font: var(--dsw-font-xs-13);
+  font: var(--dsw-font-xxs-12);
   color: var(--dsw-alias-label-tertiary);
 }
 
@@ -107,7 +158,19 @@
   margin: 2px 0 0;
   font: var(--dsw-font-xs-13);
   color: var(--dsw-alias-label-primary);
-  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
+}
+
+/* A read that did not arrive is stated in the panel it belongs to, so it is
+   visible without displacing the figures that did. */
+.note {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  font: var(--dsw-font-xs-13);
+  color: var(--dsw-alias-label-secondary);
 }
 
 .actions {
@@ -152,10 +215,26 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.meters {
+  display: flex;
+  flex-direction: column;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
 .meter {
   display: flex;
   flex-direction: column;
   gap: 7px;
+  padding: 12px 0;
+}
+
+/* A hairline between models rather than a gap, so two entries read as two
+   rows of one table instead of two floating blocks. The first has nothing
+   above it to separate from, so the divider starts at the second. */
+.meter + .meter {
+  border-top: 0.5px solid var(--dsw-alias-border-l2);
 }
 
 .meterHead {
@@ -163,6 +242,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .meterLabel {
@@ -170,10 +250,13 @@
   color: var(--dsw-alias-label-primary);
 }
 
+/* The figure itself. Promoted from secondary to primary label colour because a
+   `6% / 150%` pair is the number the page exists to show, and tabular figures
+   keep two meters from differing by a pixel. */
 .meterValue {
-  font: var(--dsw-font-xs-13);
+  font: var(--dsw-font-xs-strong-13);
   font-variant-numeric: tabular-nums;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--dsw-alias-label-primary);
 }
 
 /* A full-round track is a documented exception to the scale (ui-radius.zh.md
@@ -195,12 +278,42 @@
   transition: width var(--ds-transition-duration) var(--ds-ease-in-out);
 }
 
+/* Two escalation steps, not a traffic light. A window heading for its cap is
+   worth noticing before it runs out; a window that has run out has already
+   stopped the provider, so it is stated rather than merely coloured. The
+   thresholds ride the same ratio the bar is drawn at, so the colour and the
+   fill can never disagree. */
+.meter[data-level='high'] .fill {
+  background: var(--dsw-alias-state-warn-primary);
+}
+
+.meter[data-level='spent'] .fill {
+  background: var(--dsw-alias-state-error-primary);
+}
+
+.meter[data-level='high'] .meterValue,
+.meter[data-level='spent'] .meterValue {
+  color: var(--dsw-alias-state-warn-primary);
+}
+
+.meter[data-level='spent'] .meterValue {
+  color: var(--dsw-alias-state-error-primary);
+}
+
 .meterFoot {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
-  font: var(--dsw-font-xs-13);
+  font: var(--dsw-font-xxs-12);
   color: var(--dsw-alias-label-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* When the figures were read, stated once for the whole section rather than
+   repeated under every bar. */
+.stamp {
+  margin: 0;
+  font: var(--dsw-font-xxs-12);
+  color: var(--dsw-alias-label-tertiary);
 }

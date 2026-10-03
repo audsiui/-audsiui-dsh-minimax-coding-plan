@@ -29,10 +29,12 @@ export { MinimaxRemoteService, type MinimaxRemoteOptions } from './remote.ts'
 export type {
   RemoteAccountStatus,
   RemoteAccountView,
+  RemotePlanView,
   RemoteQuotaView,
   RemoteQuotaWindow,
   RemoteSignInFailure,
 } from './types.ts'
+export { fetchPlan, PlanAuthError, PlanNetworkError, type PlanClientOptions, type PlanSnapshot } from './plan.ts'
 export {
   fetchQuota,
   QuotaAuthError,

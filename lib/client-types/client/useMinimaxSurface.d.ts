@@ -1,8 +1,9 @@
 import type { MinimaxSurfaceApi } from './index.ts';
-import type { RemoteAccountView, RemoteQuotaView } from '../types.ts';
+import type { RemoteAccountView, RemotePlanView, RemoteQuotaView } from '../types.ts';
 /** Live account and usage state, plus the two transitions. */
 export interface MinimaxSurfaceState {
     readonly state: RemoteAccountView | undefined;
+    readonly plan: RemotePlanView | undefined;
     readonly quota: RemoteQuotaView | undefined;
     readonly loading: boolean;
     readonly busy: boolean;

@@ -15,9 +15,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { MinimaxAccount, type MinimaxAccountState } from './account.ts'
 import type { RegionEndpoints } from './constants.ts'
+import { fetchPlan, type PlanSnapshot } from './plan.ts'
 import { fetchQuota, QuotaAuthError, type QuotaWindow } from './quota.ts'
 import type {
   RemoteAccountView,
+  RemotePlanView,
   RemoteQuotaView,
   RemoteQuotaWindow,
 } from './types.ts'
@@ -39,7 +41,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 export interface MinimaxRemoteOptions {
   /** The credential the surface's buttons act on. */
   readonly account: MinimaxAccount
-  /** Region origins; only `quotaOrigin` is read. */
+  /** Region origins; `quotaOrigin` and `agentOrigin` are read. */
   readonly endpoints: RegionEndpoints
   /** Region name, reported back so a surface can show it. */
   readonly region: string
@@ -92,14 +94,51 @@ function toWindow(window: QuotaWindow): RemoteQuotaWindow {
     usedPercent: window.usedPercent,
     resetAtMs: window.resetAtMs ?? null,
     remainsMs: window.remainsMs ?? null,
+    totalCount: window.totalCount ?? null,
+    usedCount: window.usedCount ?? null,
+    remainsCount: window.remainsCount ?? null,
     present: window.present,
     status: window.status ?? null,
+    unlimited: window.unlimited,
+  }
+}
+
+/** Project the plan read onto the wire record. */
+function toPlanView(snapshot: PlanSnapshot): RemotePlanView {
+  return {
+    accountName: snapshot.accountName ?? null,
+    accountId: snapshot.accountId ?? null,
+    tier: snapshot.tier ?? null,
+    planExpiresAtMs: snapshot.planExpiresAtMs ?? null,
+    hasTokenPlan: snapshot.hasTokenPlan ?? null,
+    subscriptionType: snapshot.subscriptionType ?? null,
+    error: snapshot.error ?? null,
   }
 }
 
 /** A usage read that found no usable grant, with the reason already decided. */
 function unusableQuota(authExpired: boolean, error: string, now: number): RemoteQuotaView {
   return { windows: [], fetchedAtMs: now, authExpired, error }
+}
+
+/**
+ * A plan read that produced nothing.
+ *
+ * There is no `authExpired` flag here the way the usage read has one: both
+ * origins reject the same grant, and the surface already reacts to that through
+ * the usage read. A plan-only failure would otherwise be able to drive the page
+ * into a re-sign-in the usage read would contradict.
+ */
+function unusablePlan(error: string): RemotePlanView {
+  return {
+    accountName: null,
+    accountId: null,
+    tier: null,
+    planExpiresAtMs: null,
+    hasTokenPlan: null,
+    subscriptionType: null,
+    error,
+  }
 }
 
 /**
@@ -121,6 +160,40 @@ export class MinimaxRemoteService extends TypertRemoteService {
     // convenience it can fold.
     super(ctx, 'minimaxRemote', { namespace: 'minimax' })
     this.options = options
+  }
+
+  /**
+   * Resolve the stored grant for a read against one of the service origins.
+   *
+   * Shared by {@link quota} and {@link plan} so the two cannot each attempt a
+   * refresh of the same credential: the account refreshes once, on expiry, and
+   * a second caller arriving a moment later gets the cached token.
+   *
+   * @returns the access token, or the reason there is none.
+   */
+  private async resolveGrant(): Promise<
+    { readonly token: string } | { readonly authExpired: boolean, readonly error: string }
+  > {
+    const state = this.options.account.getState()
+    if (state.status !== 'authenticated') {
+      return { authExpired: false, error: 'not signed in' }
+    }
+    // Resolving the grant can reject on its own — a refresh that gets a 5xx or
+    // a socket that dies — so it shares the read's fate. An exception escaping a
+    // @Remote method is folded by the Gateway into `gateway/internal`
+    // (`docs/cookbook/adding-a-remote-api.zh.md:53`), which would hand the
+    // surface a failure it cannot tell from a quota outage.
+    let token: string | undefined
+    try {
+      token = await this.options.account.resolveToken(this.options.endpoints.quotaOrigin)
+    }
+    catch (error) {
+      return { authExpired: true, error: error instanceof Error ? error.message : String(error) }
+    }
+    if (token === undefined) {
+      return { authExpired: true, error: 'the stored grant could not be resolved' }
+    }
+    return { token }
   }
 
   /**
@@ -191,28 +264,13 @@ export class MinimaxRemoteService extends TypertRemoteService {
   @Remote('quota')
   async quota(): Promise<RemoteQuotaView> {
     const now = (this.options.now ?? Date.now)()
-    const state = this.options.account.getState()
-    if (state.status !== 'authenticated') {
-      return unusableQuota(false, 'not signed in', now)
-    }
-    // Resolving the grant can reject on its own — a refresh that gets a 5xx or
-    // a socket that dies — so it shares the read's fate. An exception escaping a
-    // @Remote method is folded by the Gateway into `gateway/internal`
-    // (`docs/cookbook/adding-a-remote-api.zh.md:53`), which would hand the
-    // surface a failure it cannot tell from a quota outage.
-    let token: string | undefined
-    try {
-      token = await this.options.account.resolveToken(this.options.endpoints.quotaOrigin)
-    }
-    catch (error) {
-      return unusableQuota(true, error instanceof Error ? error.message : String(error), now)
-    }
-    if (token === undefined) {
-      return unusableQuota(true, 'the stored grant could not be resolved', now)
+    const grant = await this.resolveGrant()
+    if (!('token' in grant)) {
+      return unusableQuota(grant.authExpired, grant.error, now)
     }
     try {
       const snapshot = await fetchQuota({
-        token,
+        token: grant.token,
         endpoints: this.options.endpoints,
         fetchImpl: this.options.fetchImpl,
         now: this.options.now,
@@ -229,6 +287,35 @@ export class MinimaxRemoteService extends TypertRemoteService {
         return unusableQuota(true, error.message, now)
       }
       return unusableQuota(false, error instanceof Error ? error.message : String(error), now)
+    }
+  }
+
+  /**
+   * Read who is signed in and what plan they are on.
+   *
+   * Kept separate from {@link quota} rather than folded into it, so the two
+   * reads fail independently: a plan outage must not blank a usage figure the
+   * service already answered with, and a usage outage must not hide the tier
+   * name. A failure is reported in the returned record for the same reason
+   * `quota` does — the surface has to tell "no grant yet" from "unreachable".
+   *
+   * @returns the account and plan, or the reason there are none.
+   */
+  @Remote('plan')
+  async plan(): Promise<RemotePlanView> {
+    const grant = await this.resolveGrant()
+    if (!('token' in grant)) {
+      return unusablePlan(grant.error)
+    }
+    try {
+      return toPlanView(await fetchPlan({
+        token: grant.token,
+        endpoints: this.options.endpoints,
+        fetchImpl: this.options.fetchImpl,
+      }))
+    }
+    catch (error) {
+      return unusablePlan(error instanceof Error ? error.message : String(error))
     }
   }
 }

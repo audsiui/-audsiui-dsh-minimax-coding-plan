@@ -56,6 +56,19 @@ export interface RemoteQuotaWindow {
   /** Milliseconds left in the window, as the service counts them. */
   readonly remainsMs: number | null
   /**
+   * Request-count allowance, when the window is metered in requests.
+   *
+   * `null` is the service's `-1`: the window has no request-count quota and is
+   * metered purely as a percentage of {@link totalPercent}. A real account
+   * reports `-1` on its `general` entry alongside a live `6% / 150%` weekly
+   * allowance, so the two currencies coexist and neither implies the other.
+   */
+  readonly totalCount: number | null
+  /** Requests consumed from {@link totalCount}, when it is a real count. */
+  readonly usedCount: number | null
+  /** Requests left, as the service counts them, when it counts at all. */
+  readonly remainsCount: number | null
+  /**
    * False when the response carried none of this window's fields.
    *
    * Decided by the percentage fields, which are what the surface draws. The
@@ -67,6 +80,38 @@ export interface RemoteQuotaWindow {
   readonly present: boolean
   /** The service's own window status, verbatim. */
   readonly status: number | null
+  /**
+   * Whether the service reports this window as not metered.
+   *
+   * The service's own status of `3` is the only value with evidence behind it —
+   * it is the value MiniMax's client maps to its "unlimited" flag, and a real
+   * account reports `1` on every window.
+   */
+  readonly unlimited: boolean
+}
+
+/** Who is signed in and what they bought. */
+export interface RemotePlanView {
+  /** Display name the account service reported. */
+  readonly accountName: string | null
+  /**
+   * Stable account id, or null.
+   *
+   * The OAuth grant carries none of its own: the access token is an opaque
+   * 60-character string rather than a JWT, so there is no claim to read. This
+   * is the only place an account id can come from.
+   */
+  readonly accountId: string | null
+  /** Plan tier name, e.g. `Max`. */
+  readonly tier: string | null
+  /** When the plan itself lapses, in epoch milliseconds. */
+  readonly planExpiresAtMs: number | null
+  /** Whether the service considers this account to be on a token plan. */
+  readonly hasTokenPlan: boolean | null
+  /** The service's own subscription kind, e.g. `token_plan`. */
+  readonly subscriptionType: string | null
+  /** Set when the read failed, so the surface can say why the card is thin. */
+  readonly error: string | null
 }
 
 /** The whole usage read, or why there is none. */

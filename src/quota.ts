@@ -24,6 +24,20 @@
  * percentage too, and it is not bounded by 100 — a real weekly window reported
  * `150%`. Clamping it would have turned a 150% allowance into a 100% one, so
  * totals are passed through and only the rendered ratio is bounded.
+ *
+ * A window is metered in one of two currencies and the two are not
+ * interchangeable. `general` reports `-1` for every `*_count` and meters purely
+ * in percentages; `video` reports real counts and meters in them. MiniMax's own
+ * client picks the currency the same way — it reads the percentage pair for the
+ * entry named `general` and the count triple for the `video` entry — so both are
+ * carried here and the surface decides which to draw.
+ *
+ * The wire's own `*_status` is carried verbatim. A status of `3` means the
+ * window is not metered at all, which is what MiniMax's client maps to its
+ * "unlimited" flag; that mapping was dropped from this module once on the
+ * strength of a guess that a `-1` count implied it, which is a different field
+ * answering a different question. It is restored, keyed on the status the
+ * service actually sends.
  */
 import type { RegionEndpoints } from './constants.ts'
 
@@ -48,6 +62,22 @@ export interface QuotaWindow {
   /** Milliseconds left in the window, as the server counts them. */
   readonly remainsMs: number | undefined
   /**
+   * Request-count allowance, when the window is metered in requests.
+   *
+   * The server sends `-1` for a window that is metered in percentages instead,
+   * and a real account does exactly that on its `general` entry while reporting
+   * a live `6% / 150%` weekly allowance. `-1` therefore means "this window has
+   * no request-count quota", not "this window is unmetered" — the percentages
+   * are the real figure there. `undefined` is that case; a number is a real
+   * count. MiniMax's own client reads these to draw the `video` entry, so they
+   * are not dropped.
+   */
+  readonly totalCount: number | undefined
+  /** Requests consumed from {@link totalCount}, when it is a real count. */
+  readonly usedCount: number | undefined
+  /** Requests left, as the server counts them, when it counts at all. */
+  readonly remainsCount: number | undefined
+  /**
    * Whether the response carried this window's own fields.
    *
    * The `*_count` fields being `-1` does **not** mean the window is unmetered.
@@ -61,6 +91,15 @@ export interface QuotaWindow {
   readonly present: boolean
   /** The server's own window status, verbatim. */
   readonly status: number | undefined
+  /**
+   * Whether the service reports this window as not metered.
+   *
+   * `3` is the status MiniMax's client maps to its "unlimited" flag, and the
+   * mapping is taken from its parser rather than inferred: a real account
+   * reports `1` on every window, so only a `3` here is evidence the service
+   * considers a window unmetered, and nothing else is guessed at.
+   */
+  readonly unlimited: boolean
 }
 
 /** Everything the console renders for one account. */
@@ -146,6 +185,25 @@ function toStatus(value: unknown): number | undefined {
 }
 
 /**
+ * Parse a request count, treating the service's `-1` as "not counted here".
+ * @param value - the raw `*_count` field.
+ * @returns the count, or undefined when the window meters percentages instead.
+ */
+function toCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+/**
+ * The status value MiniMax's client reads as "this window is not metered".
+ *
+ * Taken from its parser (`out/_next/static/chunks/15233-*.js`), which tests
+ * `3 === current_interval_status` for the interval window and the matching
+ * `current_weekly_status` for the weekly one. A real account reports `1`
+ * throughout, so this is the only value with evidence behind it.
+ */
+const UNLIMITED_STATUS = 3
+
+/**
  * Whether the response carried this window's own fields.
  *
  * The `*_count` fields being `-1` does **not** mean the window is unmetered.
@@ -170,7 +228,11 @@ function readWindow(
   statusField: string,
   resetField: string,
   remainsField: string,
+  totalCountField: string,
+  usedCountField: string,
+  remainsCountField: string,
 ): QuotaWindow {
+  const status = toStatus(entry[statusField])
   return {
     model,
     window,
@@ -178,11 +240,15 @@ function readWindow(
     usedPercent: toUsed(entry[usedField]),
     resetAtMs: toEpochMs(entry[resetField]),
     remainsMs: toDurationMs(entry[remainsField]),
+    totalCount: toCount(entry[totalCountField]),
+    usedCount: toCount(entry[usedCountField]),
+    remainsCount: toCount(entry[remainsCountField]),
     // Presence is decided by the window's own percentage fields, which are the
     // figures the surface draws. The `*_count` fields are not consulted: see
     // QuotaWindow.present for why -1 there does not mean "unmetered".
     present: isPresent(entry, totalField, usedField, statusField, resetField),
-    status: toStatus(entry[statusField]),
+    status,
+    unlimited: status === UNLIMITED_STATUS,
   }
 }
 
@@ -261,10 +327,14 @@ export async function fetchQuota(options: QuotaClientOptions): Promise<QuotaSnap
     windows.push(
       readWindow(entry, model, 'interval',
         'current_interval_total_percent', 'current_interval_used_percent',
-        'current_interval_status', 'end_time', 'remains_time'),
+        'current_interval_status', 'end_time', 'remains_time',
+        'current_interval_total_count', 'current_interval_used_count',
+        'current_interval_remains_count'),
       readWindow(entry, model, 'weekly',
         'current_weekly_total_percent', 'current_weekly_used_percent',
-        'current_weekly_status', 'weekly_end_time', 'weekly_remains_time'),
+        'current_weekly_status', 'weekly_end_time', 'weekly_remains_time',
+        'current_weekly_total_count', 'current_weekly_used_count',
+        'current_weekly_remains_count'),
     )
   }
 

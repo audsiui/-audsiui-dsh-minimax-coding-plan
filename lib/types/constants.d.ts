@@ -27,6 +27,19 @@ export interface RegionEndpoints {
      * rather than folded into one "any known host" check.
      */
     readonly quotaOrigin: string;
+    /**
+     * Agent origin serving `/v1/api/user/*` and `/matrix/api/v1/commerce/*`.
+     *
+     * A third distinct host, and the reason {@link inferenceOrigin} is not
+     * reused for it: that value is the Messages *path* (`.../mavis/api/v1/llm`),
+     * and deriving a bare origin from it by string surgery would make a routing
+     * change silently become a wrong URL instead of a type error.
+     *
+     * Verified on `agent.minimax.cn`: `GET /v1/api/user/info` and
+     * `POST /matrix/api/v1/commerce/get_membership_info` both answer under the
+     * same `Authorization: Bearer` grant the quota read uses.
+     */
+    readonly agentOrigin: string;
 }
 /** Regions MiniMax serves, selected by configuration. */
 export declare const REGION_ENDPOINTS: {
@@ -34,11 +47,13 @@ export declare const REGION_ENDPOINTS: {
         readonly accountOrigin: "https://account.minimax.cn";
         readonly inferenceOrigin: "https://agent.minimax.cn/mavis/api/v1/llm";
         readonly quotaOrigin: "https://www.minimaxi.com";
+        readonly agentOrigin: "https://agent.minimax.cn";
     };
     readonly en: {
         readonly accountOrigin: "https://account.minimax.io";
         readonly inferenceOrigin: "https://agent.minimax.io/mavis/api/v1/llm";
         readonly quotaOrigin: "https://platform.minimax.io";
+        readonly agentOrigin: "https://agent.minimax.io";
     };
 };
 /** Configurable region names. */

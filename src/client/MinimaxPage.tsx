@@ -1,16 +1,22 @@
 /**
  * The MiniMax page inside Settings.
  *
- * One `settings.section` entry owns the whole page: the account state, the two
+ * One `settings.section` entry owns the whole page: the account identity, the two
  * buttons, and the usage readout. That is what the slot is for — the section
  * owner receives nothing but `close`, and the entry draws its own internals.
+ *
+ * The card reads three separate things and keeps them visibly separate, because
+ * they come from three separate places and can each fail alone: the account
+ * identity and plan tier from the agent origin, the grant's own expiry from
+ * local state, and the metered windows from the open platform. A read that did
+ * not arrive is shown as "not reported" rather than as a blank or a zero.
  *
  * Everything visual comes from `@deepseek-ai/dsh-client-ui-primitives` plus the
  * component's own CSS Module, so the page inherits the shell's design tokens and
  * stays legible in both themes. See `MinimaxPage.module.css` for the styling
  * rules this component is held to.
  */
-import { Button, Pill, SegmentedControl, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Pill, SegmentedControl, StateDot, Tag, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ComposedProps } from '@deepseek-ai/dsh-client-ui-slots'
 import { useState, type ReactElement } from 'react'
 import type { RemoteQuotaWindow } from '../types.ts'
@@ -36,10 +42,23 @@ type PageProps = ComposedProps<
 /** Which allowance window the readout is showing. */
 type WindowId = 'interval' | 'weekly'
 
-/** Format an epoch instant as a local timestamp, or nothing. */
+/**
+ * A plan within this many days of lapsing is worth flagging rather than
+ * showing as an ordinary date. Chosen to be well outside a monthly billing
+ * cycle so a normally-paid plan never trips it.
+ */
+const PLAN_EXPIRY_WARNING_MS = 14 * 24 * 60 * 60 * 1000
+
+/** Format an epoch instant as a local date and time, or nothing. */
 function stamp(ms: number | null | undefined): string {
   if (ms === null || ms === undefined) return ''
   return new Date(ms).toLocaleString()
+}
+
+/** Format an epoch instant as a plain local date, for a plan that lasts months. */
+function date(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return ''
+  return new Date(ms).toLocaleDateString()
 }
 
 /**
@@ -65,48 +84,113 @@ function dotFor(status: string): 'done' | 'warning' | 'ongoing' | 'idle' {
   return 'idle'
 }
 
+/**
+ * The localized name for a `model_name` the service groups its windows under.
+ *
+ * The Host sends the raw name because a Chinese string has no locale to travel
+ * with across the Remote boundary; the wording belongs here. An unrecognised
+ * name is passed through untouched rather than collapsed into a bucket it may
+ * not belong to.
+ */
+function modelLabel(model: string, t: PageProps['t']): string {
+  if (model === 'general') return t('model.general')
+  if (model === 'video') return t('model.video')
+  return model
+}
+
+/**
+ * Clamp a ratio into the 0-100 a bar can actually draw.
+ * @returns the share of the window's own total that is consumed.
+ */
+function ratio(used: number, total: number): number {
+  if (!Number.isFinite(total) || total <= 0) return 0
+  return Math.max(0, Math.min(100, Math.round(used / total * 100)))
+}
+
+/**
+ * Escalation step for a meter's fill, as a share of the window's own total.
+ *
+ * Deliberately two steps rather than a traffic light: a window heading for its
+ * cap is worth noticing before it runs out, and one that has run out has
+ * already stopped the provider, so it is stated rather than merely coloured.
+ * The step is chosen from the same ratio the bar is drawn at, so the colour and
+ * the fill cannot disagree.
+ */
+function levelOf(spent: number): 'high' | 'spent' | undefined {
+  if (spent >= 100) return 'spent'
+  if (spent >= 80) return 'high'
+  return undefined
+}
+
+/**
+ * The currency one window is metered in.
+ *
+ * A window reports a real request count, a percentage pair, or both. `video`
+ * reports both on the same entry; `general` reports only percentages, because
+ * the service sends `-1` for every count there rather than omitting them. So the
+ * count wins where there is one — it is the figure that actually decrements —
+ * and the percentage is the fallback, not the alternative.
+ */
+function meterKind(win: RemoteQuotaWindow): 'count' | 'percent' {
+  return win.totalCount !== null && win.totalCount > 0 ? 'count' : 'percent'
+}
+
 /** Render one model's allowance window as a labelled bar. */
 function UsageBar(props: { win: RemoteQuotaWindow; label: string; t: PageProps['t'] }): ReactElement {
   const { win, label, t } = props
+  const name = modelLabel(win.model, t)
+
   if (!win.present) {
     return (
-      <div className={styles.meter}>
+      <li className={styles.meter}>
         <div className={styles.meterHead}>
-          <span className={styles.meterLabel}>{win.model} · {label}</span>
+          <span className={styles.meterLabel}>{name} · {label}</span>
         </div>
         <p className={styles.empty}>{t('usage.unmetered')}</p>
-      </div>
+      </li>
     )
   }
 
-  // Share of the window's own total, not of a nominal 100: this plan's weekly
-  // window is metered at 150%, and a bar computed against 100 would show it
-  // permanently two-thirds spent.
-  const total = win.totalPercent > 0 ? win.totalPercent : 100
-  const spent = Math.min(100, Math.max(0, Math.round(win.usedPercent / total * 100)))
+  const byCount = meterKind(win) === 'count'
+  // An unmetered window has nothing to draw a bar against, so it is stated and
+  // not graphed. The percentages are still reported below it, because the
+  // service keeps sending them and they are still true.
+  const spent = win.unlimited
+    ? 0
+    : byCount
+      ? ratio(win.usedCount ?? 0, win.totalCount ?? 1)
+      : ratio(win.usedPercent, win.totalPercent)
+
+  const value = win.unlimited
+    ? t('usage.unlimited')
+    : byCount
+      ? t('usage.counts', { used: String(win.usedCount ?? 0), total: String(win.totalCount ?? 0) })
+      : t('usage.percents', { used: String(win.usedPercent), total: String(win.totalPercent) })
 
   return (
-    <div className={styles.meter}>
+    <li className={styles.meter} data-level={win.unlimited ? undefined : levelOf(spent)}>
       <div className={styles.meterHead}>
-        <span className={styles.meterLabel}>{win.model} · {label}</span>
-        <span className={styles.meterValue}>{spent}%</span>
+        <span className={styles.meterLabel}>{name} · {label}</span>
+        <span className={styles.meterValue}>{value}</span>
       </div>
-      <div
-        className={styles.track}
-        role="meter"
-        aria-valuenow={spent}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-label={`${win.model} ${label}`}
-      >
-        <i className={styles.fill} style={{ width: `${spent}%` }} />
-      </div>
+      {!win.unlimited && (
+        <div
+          className={styles.track}
+          role="meter"
+          aria-valuenow={spent}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-label={`${name} ${label}`}
+        >
+          <i className={styles.fill} style={{ width: `${spent}%` }} />
+        </div>
+      )}
       <div className={styles.meterFoot}>
-        <span>{t('usage.used')} {win.usedPercent}% / {win.totalPercent}%</span>
+        <span>{win.unlimited ? t('usage.unlimited') : byCount ? t('usage.byCount') : t('usage.byPercent')}</span>
         {win.remainsMs !== null && <span>{t('usage.remains')} {formatDuration(win.remainsMs)}</span>}
         {win.resetAtMs !== null && <span>{t('usage.resets')} {stamp(win.resetAtMs)}</span>}
       </div>
-    </div>
+    </li>
   )
 }
 
@@ -116,7 +200,7 @@ function UsageBar(props: { win: RemoteQuotaWindow; label: string; t: PageProps['
  * @returns the page element.
  */
 export function MinimaxPage(props: PageProps): ReactElement {
-  const { state, quota, loading, busy, error, signIn, signOut } = useMinimaxSurface(props)
+  const { state, plan, quota, loading, busy, error, signIn, signOut } = useMinimaxSurface(props)
   const { t } = props
   const [selected, setSelected] = useState<WindowId>('weekly')
 
@@ -139,6 +223,16 @@ export function MinimaxPage(props: PageProps): ReactElement {
   ]
   const selectedLabel = options.find(option => option.value === selected)?.label ?? selected
   const selectedWindows = (quota?.windows ?? []).filter(win => win.window === selected)
+
+  // A plan inside the warning horizon is worth a different tone; one already
+  // lapsed is worth a worse one. Both are read off the instant the service sent.
+  const planTone: TagTone = (() => {
+    if (plan?.planExpiresAtMs == null) return 'neutral'
+    const left = plan.planExpiresAtMs - Date.now()
+    if (left <= 0) return 'danger'
+    if (left <= PLAN_EXPIRY_WARNING_MS) return 'warning'
+    return 'info'
+  })()
 
   return (
     <div className={styles.page} data-plugin="minimax-coding-plan">
@@ -171,11 +265,38 @@ export function MinimaxPage(props: PageProps): ReactElement {
       )}
 
       {authenticated && (
-        <dl className={styles.facts}>
-          <div><dt className={styles.factLabel}>{t('accountId')}</dt><dd className={styles.factValue}>{state?.accountId ?? '—'}</dd></div>
-          <div><dt className={styles.factLabel}>{t('region')}</dt><dd className={styles.factValue}>{state?.region}</dd></div>
-          <div><dt className={styles.factLabel}>{t('expiresAt')}</dt><dd className={styles.factValue}>{stamp(state?.expiresAtMs)}</dd></div>
-        </dl>
+        <section className={styles.identity} aria-label={t('identity.title')}>
+          <div className={styles.identityHead}>
+            <div className={styles.identityNames}>
+              <h3 className={styles.accountName}>
+                {plan?.accountName ?? t('account.unknown')}
+              </h3>
+              {plan?.accountId != null && <p className={styles.accountId}>{plan.accountId}</p>}
+            </div>
+            {plan?.tier != null
+              ? <Tag tone={planTone}>{plan.tier}</Tag>
+              : <Tag tone="quiet">{t('plan.none')}</Tag>}
+          </div>
+          <dl className={styles.facts}>
+            <div>
+              <dt className={styles.factLabel}>{t('plan.expiresAt')}</dt>
+              <dd className={styles.factValue}>{date(plan?.planExpiresAtMs) || t('plan.expiresUnknown')}</dd>
+            </div>
+            <div>
+              <dt className={styles.factLabel}>{t('expiresAt')}</dt>
+              <dd className={styles.factValue}>{stamp(state?.expiresAtMs) || t('plan.expiresUnknown')}</dd>
+            </div>
+            <div>
+              <dt className={styles.factLabel}>{t('region')}</dt>
+              <dd className={styles.factValue}>{state?.region}</dd>
+            </div>
+          </dl>
+          {plan?.error != null && (
+            <p className={styles.note}>
+              <StateDot state="warning" size={8} /> {t('plan.readFailed')}: {plan.error}
+            </p>
+          )}
+        </section>
       )}
 
       {error !== undefined && (
@@ -216,9 +337,15 @@ export function MinimaxPage(props: PageProps): ReactElement {
             ? <p className={styles.error}><StateDot state="error" size={8} /> {quota.error}</p>
             : selectedWindows.length === 0
               ? <p className={styles.empty}>{t('usage.missing')}</p>
-              : selectedWindows.map(win => (
-                <UsageBar key={`${win.model}/${win.window}`} win={win} label={selectedLabel} t={t} />
-              ))}
+              : <ul className={styles.meters}>
+                  {selectedWindows.map(win => (
+                    <UsageBar key={`${win.model}/${win.window}`} win={win} label={selectedLabel} t={t} />
+                  ))}
+                </ul>}
+
+        {authenticated && quota?.error == null && quota != null && (
+          <p className={styles.stamp}>{t('usage.updatedAt', { time: stamp(quota.fetchedAtMs) })}</p>
+        )}
       </section>
     </div>
   )

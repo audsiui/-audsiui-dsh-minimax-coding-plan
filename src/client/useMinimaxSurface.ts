@@ -9,11 +9,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isRemoteFailure } from './isRemoteFailure.ts'
 import type { MinimaxSurfaceApi } from './index.ts'
-import type { RemoteAccountView, RemoteQuotaView } from '../types.ts'
+import type { RemoteAccountView, RemotePlanView, RemoteQuotaView } from '../types.ts'
 
 /** Live account and usage state, plus the two transitions. */
 export interface MinimaxSurfaceState {
   readonly state: RemoteAccountView | undefined
+  readonly plan: RemotePlanView | undefined
   readonly quota: RemoteQuotaView | undefined
   readonly loading: boolean
   readonly busy: boolean
@@ -50,6 +51,7 @@ const POLL_WINDOW_MS = 10 * 60 * 1_000
  */
 export function useMinimaxSurface(api: MinimaxSurfaceApi): MinimaxSurfaceState {
   const [state, setState] = useState<RemoteAccountView | undefined>(undefined)
+  const [plan, setPlan] = useState<RemotePlanView | undefined>(undefined)
   const [quota, setQuota] = useState<RemoteQuotaView | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -63,17 +65,26 @@ export function useMinimaxSurface(api: MinimaxSurfaceApi): MinimaxSurfaceState {
       if (!alive.current) return
       setState(next)
       setError(undefined)
-      // Usage only exists with a grant, so a signed-out account skips the read
-      // instead of asking the Host to refuse it.
+      // Usage only exists with a grant, so a signed-out account skips the reads
+      // instead of asking the Host to refuse them.
       if (next.status === 'authenticated') {
-        const usage = await api.loadQuota()
+        // The account and plan reads are independent of the usage read and of
+        // each other, so all three are in flight together. Awaiting them in
+        // sequence would make the card appear in three steps; awaiting them
+        // with `all` would let one rejection discard the other two answers.
+        // A settled read is never a rejected one: each Remote method reports
+        // its own failure inside the record it returns, and only a wiring
+        // defect rejects — which `catch` below already treats as fatal.
+        const [account, usage] = await Promise.all([api.loadPlan(), api.loadQuota()])
         if (alive.current) {
+          setPlan(account)
           setQuota(usage)
           // Nothing left to wait for; stop the window early.
           setPolling(false)
         }
       }
       else {
+        setPlan(undefined)
         setQuota(undefined)
       }
     }
@@ -135,6 +146,7 @@ export function useMinimaxSurface(api: MinimaxSurfaceApi): MinimaxSurfaceState {
 
   return {
     state,
+    plan,
     quota,
     loading,
     busy,

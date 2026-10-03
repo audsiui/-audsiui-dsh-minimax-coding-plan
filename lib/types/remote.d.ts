@@ -15,7 +15,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
 import { MinimaxAccount } from './account.ts';
 import type { RegionEndpoints } from './constants.ts';
-import type { RemoteAccountView, RemoteQuotaView } from './types.ts';
+import type { RemoteAccountView, RemotePlanView, RemoteQuotaView } from './types.ts';
 declare module '@deepseek-ai/cordis' {
     interface Context {
         minimaxRemote: MinimaxRemoteService;
@@ -33,7 +33,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 export interface MinimaxRemoteOptions {
     /** The credential the surface's buttons act on. */
     readonly account: MinimaxAccount;
-    /** Region origins; only `quotaOrigin` is read. */
+    /** Region origins; `quotaOrigin` and `agentOrigin` are read. */
     readonly endpoints: RegionEndpoints;
     /** Region name, reported back so a surface can show it. */
     readonly region: string;
@@ -51,6 +51,16 @@ export declare class MinimaxRemoteService extends TypertRemoteService {
      * @param options - the account, origins, and test seams.
      */
     constructor(ctx: Context, options: MinimaxRemoteOptions);
+    /**
+     * Resolve the stored grant for a read against one of the service origins.
+     *
+     * Shared by {@link quota} and {@link plan} so the two cannot each attempt a
+     * refresh of the same credential: the account refreshes once, on expiry, and
+     * a second caller arriving a moment later gets the cached token.
+     *
+     * @returns the access token, or the reason there is none.
+     */
+    private resolveGrant;
     /**
      * Current account state. The surface's poll target.
      * @returns the display projection; never carries a token.
@@ -93,6 +103,18 @@ export declare class MinimaxRemoteService extends TypertRemoteService {
      * @returns the windows, or the reason there are none.
      */
     quota(): Promise<RemoteQuotaView>;
+    /**
+     * Read who is signed in and what plan they are on.
+     *
+     * Kept separate from {@link quota} rather than folded into it, so the two
+     * reads fail independently: a plan outage must not blank a usage figure the
+     * service already answered with, and a usage outage must not hide the tier
+     * name. A failure is reported in the returned record for the same reason
+     * `quota` does — the surface has to tell "no grant yet" from "unreachable".
+     *
+     * @returns the account and plan, or the reason there are none.
+     */
+    plan(): Promise<RemotePlanView>;
 }
 export { RemoteError };
 //# sourceMappingURL=remote.d.ts.map

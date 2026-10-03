@@ -3,16 +3,18 @@ import type {
   RemoteResult,
   TypertRemoteContribution,
 } from '@deepseek-ai/dsh-typert-protocol'
-import type { RemoteAccountView, RemoteQuotaView } from '@audsiui/dsh-minimax-coding-plan/types'
+import type { RemoteAccountView, RemotePlanView, RemoteQuotaView } from '@audsiui/dsh-minimax-coding-plan/types'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface TypertRemoteNamespace$6d696e696d6178 {
+    plan: () => Promise<RemoteResult<RemotePlanView>>
     quota: () => Promise<RemoteResult<RemoteQuotaView>>
     signIn: () => Promise<RemoteResult<RemoteAccountView>>
     signOut: () => Promise<RemoteResult<RemoteAccountView>>
     state: () => Promise<RemoteResult<RemoteAccountView>>
   }
   interface TypertRemoteMap {
+    'minimax/plan': () => Promise<RemoteResult<RemotePlanView>>
     'minimax/quota': () => Promise<RemoteResult<RemoteQuotaView>>
     'minimax/signIn': () => Promise<RemoteResult<RemoteAccountView>>
     'minimax/signOut': () => Promise<RemoteResult<RemoteAccountView>>

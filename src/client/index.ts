@@ -30,7 +30,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { TypertRemoteContribution, TypertRemoteNamespaceMap } from '@deepseek-ai/dsh-typert-protocol'
 import remoteContribution from '../generated/remote.ts'
-import type { RemoteAccountView, RemoteQuotaView } from '../types.ts'
+import type { RemoteAccountView, RemotePlanView, RemoteQuotaView } from '../types.ts'
 import { MinimaxPage } from './MinimaxPage.tsx'
 import { en, zh, type MinimaxLocaleKey } from './locales.ts'
 
@@ -66,6 +66,7 @@ type MinimaxRemote = TypertRemoteNamespaceMap['minimax']
  */
 export interface MinimaxSurfaceApi {
   loadState: () => Promise<RemoteAccountView>
+  loadPlan: () => Promise<RemotePlanView>
   loadQuota: () => Promise<RemoteQuotaView>
   startSignIn: () => Promise<void>
   signOut: () => Promise<void>
@@ -95,6 +96,11 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const api: MinimaxSurfaceApi = {
     loadState: async () => {
       const result = await remote.state()
+      if (!result.ok) throw result.error
+      return result.value
+    },
+    loadPlan: async () => {
+      const result = await remote.plan()
       if (!result.ok) throw result.error
       return result.value
     },
