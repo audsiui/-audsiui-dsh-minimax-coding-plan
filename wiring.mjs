@@ -447,5 +447,161 @@ const fullPayload = minimax.grantPayload(fullGrant, "cn");
 check("a fully populated grant keeps every field",
   fullPayload.refreshToken === "rt" && fullPayload.accountId === "acct-1" && fullPayload.subject === "sub-1");
 
+// --- A sign-in that never starts must be reportable as a failure -----------
+//
+// The Remote declared `minimax/sign-in-failed` but had no code path that could
+// raise it: `beginSignIn` awaited a promise that only ever resolved, and the
+// attempt that actually failed was one nobody awaited. So the operator pressed
+// 登录, the code request died, and the surface reported a plain `signed-out` —
+// indistinguishable from never having pressed anything. The declared code was
+// decoration.
+{
+  const dir = await mkdtemp(join(tmpdir(), "minimax-failstart-"));
+  const failing = new minimax.MinimaxAccount(new Context(), {
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    credentialsPath: join(dir, "credential.json"),
+    openBrowser: false,
+    client: {
+      now: () => 0,
+      sleep: async () => {},
+      fetchImpl: async () => jsonResponse(
+        { error: "invalid_client", error_description: "audience is not allowed for this client" }, 400,
+      ),
+    },
+  });
+  let beginFailure;
+  try { await failing.beginSignIn(); } catch (error) { beginFailure = error; }
+  check("beginSignIn rejects when the code request itself fails", beginFailure !== undefined,
+    String(beginFailure));
+  check("the rejection is the server's own error, not a wrapper", beginFailure?.code === "invalid_client",
+    beginFailure?.code);
+  // `error_description` used to be dropped on the floor, leaving an operator
+  // and a maintainer staring at `device_authorization_failed` with no cause.
+  check("the server's error_description survives",
+    typeof beginFailure?.message === "string" && beginFailure.message.includes("audience is not allowed"),
+    beginFailure?.message);
+  check("a failed attempt leaves the account signed out", failing.getState().status === "signed-out",
+    failing.getState().status);
+
+  const remoteCtx = new Context();
+  const service = new minimax.MinimaxRemoteService(remoteCtx, {
+    account: failing,
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+  });
+  let thrown;
+  try { await service.signIn(); } catch (error) { thrown = error; }
+  // An exception escaping a @Remote method is folded by the Gateway into
+  // `gateway/internal`, which the surface cannot tell from an internal fault.
+  check("the Remote raises the code it declared",
+    thrown?.code === "minimax/sign-in-failed", thrown?.code);
+  check("the RemoteError carries the underlying reason",
+    typeof thrown?.details?.reason === "string" && thrown.details.reason.includes("audience is not allowed"),
+    String(thrown?.details?.reason));
+}
+
+// --- Walking away from a sign-in must not take the process down ------------
+//
+// The attempt's own promise is stored on the service and awaited by nobody when
+// the caller only wants the transition. Without a handler its rejection is a
+// process-level unhandledRejection — an operator who pressed 登录 and then
+// declined the browser prompt could kill the Host.
+{
+  const unhandled = [];
+  const onUnhandled = reason => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const dir = await mkdtemp(join(tmpdir(), "minimax-unhandled-"));
+  const abandoned = new minimax.MinimaxAccount(new Context(), {
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    credentialsPath: join(dir, "credential.json"),
+    openBrowser: false,
+    client: {
+      now: () => 0,
+      sleep: async () => {},
+      fetchImpl: async () => jsonResponse({ error: "temporarily_unavailable" }, 503),
+    },
+  });
+  try { await abandoned.beginSignIn(); } catch { /* expected */ }
+  // Two macrotask turns: the first drains the microtask queue, the second is
+  // where Node reports a rejection nobody handled.
+  await new Promise(resolve => setTimeout(resolve, 10));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  process.off("unhandledRejection", onUnhandled);
+  check("an abandoned sign-in raises no unhandledRejection", unhandled.length === 0,
+    unhandled.map(reason => String(reason)).join("; "));
+}
+
+// --- The polling deadline belongs to the device code, not to the poller -----
+//
+// `expires_in` is the lifetime of the code (RFC 8628 §3.2), counted by the
+// server from when it issued it. Anchored to the first poll instead, a caller
+// that took a while to arrive polled a code that had already died.
+{
+  let issuedAt = 1_000;
+  const polled = [];
+  const expired = new minimax.MinimaxAccount(new Context(), {
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    credentialsPath: join(join(tmpdir(), "minimax-deadline-"), "credential.json"),
+    openBrowser: false,
+    client: {
+      // The clock only moves when a sleep elapses, so the interval the server
+      // asked for is the only thing that advances the deadline.
+      now: () => issuedAt,
+      sleep: async (ms) => { issuedAt += ms; },
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/oauth2/device/code")) {
+          return jsonResponse({
+            device_code: "dc", user_code: "U-1",
+            verification_uri: "https://example.test/verify", expires_in: 10, interval: 5,
+          });
+        }
+        polled.push(issuedAt);
+        return jsonResponse({ error: "authorization_pending" }, 400);
+      },
+    },
+  });
+  await expired.beginSignIn();
+  // Two 5s polls fit inside a 10s code; the third would land at 15s.
+  await new Promise(resolve => setTimeout(resolve, 30));
+  check("polling stops at the code's own expiry", polled.length <= 2, `${polled.length} poll(s)`);
+
+  // The same clock, one that starts late: the code was issued 8s ago and lives
+  // 10s, so only one more poll is legitimate.
+  issuedAt = 1_000;
+  const lateStart = 1_008;
+  issuedAt = lateStart;
+  const latePolled = [];
+  const late = new minimax.MinimaxAccount(new Context(), {
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    credentialsPath: join(join(tmpdir(), "minimax-late-"), "credential.json"),
+    openBrowser: false,
+    client: {
+      now: () => issuedAt,
+      sleep: async (ms) => { issuedAt += ms; },
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("/oauth2/device/code")) {
+          // The stamp is taken at the moment the response lands, which is what
+          // `requestDeviceAuthorization` records.
+          issuedAt = lateStart;
+          return jsonResponse({
+            device_code: "dc", user_code: "U-1",
+            verification_uri: "https://example.test/verify", expires_in: 10, interval: 5,
+          });
+        }
+        latePolled.push(issuedAt);
+        return jsonResponse({ error: "authorization_pending" }, 400);
+      },
+    },
+  });
+  await late.beginSignIn();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  check("the deadline is anchored to the authorization response, not the first poll",
+    latePolled.length === 1, `${latePolled.length} poll(s)`);
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

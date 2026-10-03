@@ -1,0 +1,1 @@
+{"version":3,"file":"isRemoteFailure.js","sourceRoot":"","sources":["../../../src/client/isRemoteFailure.ts"],"names":[],"mappings":"AAkCA;;;GAGG;AACH,MAAM,UAAU,eAAe,CAAC,KAAc;IAC5C,OAAO,OAAO,KAAK,KAAK,QAAQ;WAC3B,KAAK,KAAK,IAAI;WACb,KAAwC,CAAC,gBAAgB,KAAK,IAAI;WACnE,OAAQ,KAA4B,CAAC,IAAI,KAAK,QAAQ,CAAA;AAC7D,CAAC"}

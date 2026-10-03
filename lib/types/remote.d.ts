@@ -65,7 +65,16 @@ export declare class MinimaxRemoteService extends TypertRemoteService {
      * observing `authorizing`, so it would never start, and the grant the operator
      * approves in the browser would land with nobody re-reading for it.
      *
+     * A failure to *start* is the one thing this method reports as a failure, and
+     * it reports it as `minimax/sign-in-failed` rather than letting the exception
+     * escape: the Gateway folds anything a `@Remote` method throws into
+     * `gateway/internal` (`docs/cookbook/adding-a-remote-api.zh.md:53`), which the
+     * surface cannot tell from an internal fault. Everything after the transition
+     * — a denial, an expiry, a revoked authorization — settles later, on the
+     * account's own state, which the surface re-reads.
+     *
      * @returns the authorizing state, including the code and verification page.
+     * @throws {RemoteError} `minimax/sign-in-failed` when the code request itself fails.
      */
     signIn(): Promise<RemoteAccountView>;
     /**

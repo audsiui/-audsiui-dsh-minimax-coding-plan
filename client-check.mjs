@@ -7,7 +7,7 @@
 // future edit breaks silently: a wrong token or a missing `corner-shape`
 // pairing renders wrong rather than erroring, and a malformed selector throws
 // only once the bundle reaches a real document.
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import vm from 'node:vm'
 
@@ -219,6 +219,75 @@ for (const [subpath, target] of Object.entries(manifest.exports)) {
 check('files publishes no source tree', !manifest.files.includes('src/'))
 check('files publishes no whole lib/ tree', !manifest.files.includes('lib/'))
 check('files publishes no map files', !manifest.files.some(f => f.endsWith('.map')))
+
+// docs/user/develop/basic/publish.zh.md:169 — a git install pulls sources, not
+// artifacts, and nothing runs the build unless the author provides `prepare`.
+check('a git install can build itself', typeof manifest.scripts?.prepare === 'string',
+  String(manifest.scripts?.prepare))
+
+// --- Client bundle contract -------------------------------------------------------
+//
+// The three-part handoff is the only shape the browser `require` bridge accepts,
+// and every external it names has to be a row the shell's frozen module table can
+// answer. A bundle that requires a specifier outside that table throws at factory
+// execution, which the module system reports as a failed row and nothing else.
+const bundlePath = resolve(import.meta.dirname, 'lib/client.js')
+check('the client bundle is built', existsSync(bundlePath))
+if (existsSync(bundlePath)) {
+  const bundle = readFileSync(bundlePath, 'utf8')
+  // The output formatter re-indents the banner, so these match the pieces with
+  // whitespace collapsed rather than the literal lines tsdown was handed.
+  const flat = bundle.replace(/\s+/gu, ' ')
+  check('the bundle opens with the module registration',
+    flat.startsWith('window.__ModuleLoader__.load({ id: "@audsiui/dsh-minimax-coding-plan", factory: (require) => {'),
+    flat.slice(0, 120))
+  check('the bundle declares the loader factory',
+    flat.includes('factory: (require) => {'))
+  check('the bundle hands back its private exports',
+    flat.includes('return module.exports; } });'), flat.slice(-90))
+  check('the bundle does not minify away its own module bindings',
+    flat.includes('var module = { exports: {} };') && flat.includes('var exports = module.exports;'))
+
+  // The platform table this build was told to target. Duplicated from
+  // tsdown.config.ts on purpose: the check is worthless if it reads the same
+  // list the build read.
+  const platform = [
+    'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
+    '@deepseek-ai/cordis', '@deepseek-ai/dsh-client-ui-slots', '@deepseek-ai/dsh-client-web-react',
+    '@deepseek-ai/dsh-client-ui-primitives', '@deepseek-ai/dsh-client-ui-settings',
+    '@deepseek-ai/dsh-client-runtime/client', '@deepseek-ai/dsh-client-locale/client',
+    '@deepseek-ai/dsh-client-connection', '@deepseek-ai/dsh-typert-protocol',
+  ]
+  const required = [...bundle.matchAll(/\brequire\((['"])([^'"]+)\1\)/g)].map(match => match[2])
+  const external = [...new Set(required.filter(specifier => !specifier.startsWith('.')))]
+  check('every external the bundle requires is a platform row',
+    external.every(specifier => platform.includes(specifier)),
+    external.filter(specifier => !platform.includes(specifier)).join(', '))
+  check('the bundle externalises nothing from @deepseek-ai outside the table',
+    !external.some(specifier => specifier.startsWith('@deepseek-ai/')
+      && !platform.includes(specifier)),
+    external.join(', '))
+
+  // The client map has to reach the TSX, or a browser stack frame is a wall of
+  // emitted JavaScript. Before the tsc-map chaining this bundle's 24 sources were
+  // all lib/client-types/**.
+  const mapPath = `${bundlePath}.map`
+  check('the client bundle ships a map', existsSync(mapPath))
+  if (existsSync(mapPath)) {
+    const map = JSON.parse(readFileSync(mapPath, 'utf8'))
+    const authored = map.sources.filter(source => /\.(ts|tsx)$/.test(source))
+    check('the map reaches the authored sources', authored.length > 0, `${authored.length} ts/tsx of ${map.sources.length}`)
+    check('the map carries the source text',
+      Array.isArray(map.sourcesContent) && map.sourcesContent.filter(Boolean).length === map.sources.length)
+  }
+}
+
+// A split chunk is fetched as `./client.<name>.js` by the loader bridge, so a
+// chunk that does not carry that name is a request the module system cannot make.
+check('no chunk escapes the loader naming convention',
+  !existsSync(resolve(import.meta.dirname, 'lib')) ||
+  readdirSync(resolve(import.meta.dirname, 'lib')).every(name => !/^chunk-.*\.js$/.test(name)),
+  readdirSync(resolve(import.meta.dirname, 'lib')).filter(name => /^chunk-.*\.js$/.test(name)).join(', '))
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`)
 process.exit(failures === 0 ? 0 : 1)

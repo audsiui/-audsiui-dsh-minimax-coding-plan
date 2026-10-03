@@ -26,7 +26,23 @@ export declare const GRANT_KEY: CredentialKey;
  * check matters most: a token without `agent.default` cannot call anything.
  */
 export declare function parseGrantPayload(payload: unknown): StoredCredential | undefined;
-/** Build the payload a grant is stored as. */
+/**
+ * Build the payload a grant is stored as, with every absent key omitted.
+ *
+ * The credential store validates a payload as *representable in JSON* before it
+ * writes one, and a property explicitly set to `undefined` fails that check even
+ * though `JSON.stringify` would have dropped it silently — `Object.values` walks
+ * present keys regardless of what they hold
+ * (`@deepseek-ai/dsh-credentials-local/lib/index.js:302-307`). Writing
+ * `accountId: undefined` therefore wedged the whole store: the record landed,
+ * and the next Host start refused to load with `record "…/default" payload
+ * holds a value JSON cannot represent` — a crash the plugin could not recover
+ * from, because it happens before any of this code runs.
+ *
+ * Omission is the encoding "absent" already uses everywhere else here, and
+ * `parseGrantPayload` reads a missing key as absent, so nothing downstream has
+ * to know the difference.
+ */
 export declare function grantPayload(grant: TokenGrant, region: string): StoredCredential;
 /**
  * Read the stored grant, preferring the credential seam.

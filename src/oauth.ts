@@ -30,6 +30,15 @@ export interface DeviceAuthorization {
   readonly intervalSec: number
   /** PKCE verifier; presented to the token endpoint, never leaves the host. */
   readonly codeVerifier: string
+  /**
+   * Local clock reading when this authorization response came back, in epoch ms.
+   *
+   * `expires_in` is the lifetime of the device code (RFC 8628 §3.2), counted by
+   * the server from the moment it issued it — not from the first poll. Anchoring
+   * the deadline anywhere later hands out extra polling time that the code does
+   * not have.
+   */
+  readonly issuedAtMs: number
 }
 
 /** One successful token response, already normalized for storage. */
@@ -86,6 +95,15 @@ interface PostResult {
   readonly body: Record<string, unknown>
   /** Server-supplied `error`, absent when the response was a success. */
   readonly error?: string
+  /**
+   * Server-supplied `error_description` (RFC 6749 §5.2).
+   *
+   * This is the server's own explanation of *this* rejection — a malformed
+   * `code_challenge`, a client that is not allowed this audience, a device code
+   * that belongs to a different flow. Throwing it away leaves an operator and a
+   * maintainer staring at `device_authorization_failed` with nothing to act on.
+   */
+  readonly description?: string
 }
 
 /** Extra per-call behaviour for {@link postForm}. */
@@ -123,7 +141,24 @@ async function postForm(
   const body = asRecord(await response.json().catch(() => undefined))
   if (!body) throw new OAuthProtocolError('invalid_json_response', undefined, response.status)
   const error = readString(body, 'error')
-  return { ok: response.ok && !error, status: response.status, body, ...error === undefined ? {} : { error } }
+  const description = readString(body, 'error_description')
+  return {
+    ok: response.ok && !error,
+    status: response.status,
+    body,
+    ...error === undefined ? {} : { error },
+    ...description === undefined ? {} : { description },
+  }
+}
+
+/**
+ * Turn a rejected POST into a protocol error, keeping the server's own wording.
+ * @param result - the rejected response.
+ * @param fallbackCode - the code to use when the server sent none.
+ * @returns the error to throw.
+ */
+function reject(result: PostResult, fallbackCode: string): OAuthProtocolError {
+  return new OAuthProtocolError(result.error ?? fallbackCode, result.description, result.status)
 }
 
 /**
@@ -147,7 +182,7 @@ export async function requestDeviceAuthorization(
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
   }, options, signal)
-  if (!result.ok) throw new OAuthProtocolError(result.error ?? 'device_authorization_failed', undefined, result.status)
+  if (!result.ok) throw reject(result, 'device_authorization_failed')
 
   const deviceCode = readString(result.body, 'device_code')
   const userCode = readString(result.body, 'user_code')
@@ -164,6 +199,10 @@ export async function requestDeviceAuthorization(
     expiresInSec,
     intervalSec: readPositiveNumber(result.body, 'interval') ?? DEFAULT_POLL_INTERVAL_SEC,
     codeVerifier,
+    // Stamped here, immediately after the response lands, rather than in
+    // `pollDeviceToken` — every microtask between the two belongs to the
+    // code's own lifetime.
+    issuedAtMs: (options.now ?? Date.now)(),
   }
 }
 
@@ -196,15 +235,25 @@ export async function pollDeviceToken(
 ): Promise<TokenGrant> {
   const now = options.now ?? Date.now
   const sleep = options.sleep ?? ((ms: number) => new Promise(resolve => setTimeout(resolve, ms)))
-  const deadline = now() + authorization.expiresInSec * 1_000
+  // RFC 8628 §3.2: `expires_in` bounds the device code from the moment the
+  // authorization response was produced, not from the first poll. Anchoring to
+  // the first poll would add every microtask spent getting here — state
+  // assignment, a log line, a browser launch — to the window.
+  const deadline = authorization.issuedAtMs + authorization.expiresInSec * 1_000
   let intervalMs = authorization.intervalSec * 1_000
 
-  while (now() < deadline) {
+  while (true) {
     signal?.throwIfAborted()
     // Respect the advertised cadence from the very first poll, not just between
     // them: the account origin answers a poll issued inside that window with
     // `slow_down`, which then costs an extra five seconds on every attempt.
     await sleep(intervalMs)
+    // Re-check *after* the wait, never before it. A sleep that carries the
+    // attempt past its life has to end the loop here; checking at the top would
+    // admit one more poll against a code the server has already expired, and
+    // turn a local, correct `expired_token` into a server verdict about a
+    // request that was never entitled to an answer.
+    if (now() >= deadline) break
     const result = await postForm(endpoints, '/oauth2/token', {
       grant_type: DEVICE_GRANT_TYPE,
       device_code: authorization.deviceCode,
@@ -230,7 +279,7 @@ export async function pollDeviceToken(
       if (result.error === 'slow_down') intervalMs += 5_000
       continue
     }
-    throw new OAuthProtocolError(result.error ?? 'device_authorization_failed', undefined, result.status)
+    throw reject(result, 'device_authorization_failed')
   }
   throw new OAuthProtocolError('expired_token', 'The MiniMax device authorization expired before it was approved.')
 }
@@ -256,7 +305,7 @@ export async function refreshAccessToken(
     scope: OAUTH_SCOPE,
     audience: OAUTH_AUDIENCE,
   }, options, signal)
-  if (!result.ok) throw new OAuthProtocolError(result.error ?? 'token_refresh_failed', undefined, result.status)
+  if (!result.ok) throw reject(result, 'token_refresh_failed')
   return parseTokenGrant(result.body, (options.now ?? Date.now)(), refreshToken)
 }
 
@@ -284,7 +333,7 @@ export async function revokeRefreshToken(
     token_type_hint: 'refresh_token',
     client_id: OAUTH_CLIENT_ID,
   }, options, signal, { tolerateMissing: true })
-  if (!result.ok) throw new OAuthProtocolError(result.error ?? 'oauth_request_failed', undefined, result.status)
+  if (!result.ok) throw reject(result, 'oauth_request_failed')
 }
 
 /**

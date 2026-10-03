@@ -16,10 +16,15 @@ declare module '*.module.css' {
 /**
  * Side-effect stylesheet imports.
  *
- * tsdown inlines these into the bundle and injects them at materialisation; the
- * compiler only needs to know the specifier resolves.
+ * tsdown inlines these into the bundle and injects them at materialisation. The
+ * module exports **nothing**: the global loader calls `styleInjectionModule`
+ * without a class map, and that helper emits a bare `export {};` in that case
+ * (`packages/client/tsdown.client.ts:54, 586-600`).
+ *
+ * A default export was declared here once, and it type-checked — while resolving
+ * to `undefined` at runtime, because no loader in this build ever produced one.
+ * A side-effect import has no binding to take, so none is offered.
  */
 declare module '*.css' {
-  const classes: Readonly<Record<string, string>>
-  export default classes
+  export {}
 }

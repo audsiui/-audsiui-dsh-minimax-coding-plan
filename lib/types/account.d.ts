@@ -51,9 +51,10 @@ export declare class MinimaxAccount extends Service {
     private state;
     private signInAttempt;
     private refreshInFlight;
-    /** Resolves once the in-flight attempt has reached `authorizing` or failed. */
+    /** Resolves once the in-flight attempt reaches `authorizing`; rejects if it fails first. */
     private attemptReachedStart;
     private markAttemptReachedStart;
+    private markAttemptFailed;
     /** @param ctx - context owning this account. @param options - endpoints, storage, and test seams. */
     constructor(ctx: Context, options: MinimaxAccountOptions);
     /** Read the current account state. */
@@ -69,7 +70,15 @@ export declare class MinimaxAccount extends Service {
      * is gated on observing `authorizing` then never starts polling, and the grant
      * lands with nobody watching for it.
      *
-     * @returns the authorizing state, or the state after a fast failure.
+     * A failure *before* the attempt starts — a refused code request, a 5xx, a
+     * socket that dies — rejects with the cause instead. Resolving with a plain
+     * `signed-out` would be indistinguishable from "the operator has not pressed
+     * the button", which is exactly the failure the Remote contract has no way to
+     * report: the caller declared `minimax/sign-in-failed` and could only throw it
+     * from here.
+     *
+     * @returns the authorizing state.
+     * @throws whatever ended the attempt before it reached `authorizing`.
      */
     beginSignIn(): Promise<MinimaxAccountState>;
     /**
@@ -79,6 +88,21 @@ export declare class MinimaxAccount extends Service {
      * @returns the state after the attempt settles.
      */
     signIn(): Promise<MinimaxAccountState>;
+    /**
+     * Start the one device attempt, or hand back the one already running.
+     *
+     * Two promises come out of it because callers legitimately want different
+     * edges: the surface needs the transition (to render the code), the flow
+     * runner needs the outcome (to report a denial or an expiry). Both are handed
+     * a handler at creation rather than at await, because neither caller is
+     * obliged to await: `signIn` ignores `reachedStart` entirely, and a
+     * `beginSignIn` that joins a long-running attempt attaches long after the
+     * failure it needed. An unhandled rejection is a process-level event, not an
+     * error the operator can see.
+     *
+     * @returns the attempt's transition and settlement promises.
+     */
+    private ensureAttempt;
     /**
      * Resolve a usable access token, refreshing it when it is close to expiry.
      *

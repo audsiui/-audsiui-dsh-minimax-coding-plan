@@ -15,6 +15,15 @@ export interface DeviceAuthorization {
     readonly intervalSec: number;
     /** PKCE verifier; presented to the token endpoint, never leaves the host. */
     readonly codeVerifier: string;
+    /**
+     * Local clock reading when this authorization response came back, in epoch ms.
+     *
+     * `expires_in` is the lifetime of the device code (RFC 8628 §3.2), counted by
+     * the server from the moment it issued it — not from the first poll. Anchoring
+     * the deadline anywhere later hands out extra polling time that the code does
+     * not have.
+     */
+    readonly issuedAtMs: number;
 }
 /** One successful token response, already normalized for storage. */
 export interface TokenGrant {

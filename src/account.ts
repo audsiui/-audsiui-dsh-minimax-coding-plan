@@ -70,9 +70,10 @@ export class MinimaxAccount extends Service {
   private state: MinimaxAccountState = { status: 'signed-out' }
   private signInAttempt: Promise<MinimaxAccountState> | undefined
   private refreshInFlight: Promise<StoredCredential> | undefined
-  /** Resolves once the in-flight attempt has reached `authorizing` or failed. */
+  /** Resolves once the in-flight attempt reaches `authorizing`; rejects if it fails first. */
   private attemptReachedStart: Promise<void> | undefined
   private markAttemptReachedStart: (() => void) | undefined
+  private markAttemptFailed: ((error: unknown) => void) | undefined
 
   /** @param ctx - context owning this account. @param options - endpoints, storage, and test seams. */
   constructor(ctx: Context, options: MinimaxAccountOptions) {
@@ -96,20 +97,18 @@ export class MinimaxAccount extends Service {
    * is gated on observing `authorizing` then never starts polling, and the grant
    * lands with nobody watching for it.
    *
-   * @returns the authorizing state, or the state after a fast failure.
+   * A failure *before* the attempt starts — a refused code request, a 5xx, a
+   * socket that dies — rejects with the cause instead. Resolving with a plain
+   * `signed-out` would be indistinguishable from "the operator has not pressed
+   * the button", which is exactly the failure the Remote contract has no way to
+   * report: the caller declared `minimax/sign-in-failed` and could only throw it
+   * from here.
+   *
+   * @returns the authorizing state.
+   * @throws whatever ended the attempt before it reached `authorizing`.
    */
   async beginSignIn(): Promise<MinimaxAccountState> {
-    this.attemptReachedStart = new Promise<void>((resolve) => {
-      this.markAttemptReachedStart = resolve
-    })
-    this.signInAttempt ??= this.runSignIn().finally(() => {
-      this.signInAttempt = undefined
-      // A failure before the code request settles must not leave a caller
-      // waiting on a transition that is never going to happen.
-      this.markAttemptReachedStart?.()
-      this.markAttemptReachedStart = undefined
-    })
-    await this.attemptReachedStart
+    await this.ensureAttempt().reachedStart
     return this.getState()
   }
 
@@ -120,10 +119,42 @@ export class MinimaxAccount extends Service {
    * @returns the state after the attempt settles.
    */
   async signIn(): Promise<MinimaxAccountState> {
-    this.signInAttempt ??= this.runSignIn().finally(() => {
-      this.signInAttempt = undefined
+    return this.ensureAttempt().settled
+  }
+
+  /**
+   * Start the one device attempt, or hand back the one already running.
+   *
+   * Two promises come out of it because callers legitimately want different
+   * edges: the surface needs the transition (to render the code), the flow
+   * runner needs the outcome (to report a denial or an expiry). Both are handed
+   * a handler at creation rather than at await, because neither caller is
+   * obliged to await: `signIn` ignores `reachedStart` entirely, and a
+   * `beginSignIn` that joins a long-running attempt attaches long after the
+   * failure it needed. An unhandled rejection is a process-level event, not an
+   * error the operator can see.
+   *
+   * @returns the attempt's transition and settlement promises.
+   */
+  private ensureAttempt(): { readonly reachedStart: Promise<void>, readonly settled: Promise<MinimaxAccountState> } {
+    if (this.signInAttempt !== undefined && this.attemptReachedStart !== undefined) {
+      return { reachedStart: this.attemptReachedStart, settled: this.signInAttempt }
+    }
+    const reachedStart = new Promise<void>((resolve, reject) => {
+      this.markAttemptReachedStart = resolve
+      this.markAttemptFailed = reject
     })
-    return this.signInAttempt
+    void reachedStart.catch(() => {})
+    const settled: Promise<MinimaxAccountState> = this.runSignIn().finally(() => {
+      this.signInAttempt = undefined
+      this.attemptReachedStart = undefined
+      this.markAttemptReachedStart = undefined
+      this.markAttemptFailed = undefined
+    })
+    void settled.catch(() => {})
+    this.signInAttempt = settled
+    this.attemptReachedStart = reachedStart
+    return { reachedStart, settled }
   }
 
   /**
@@ -216,7 +247,9 @@ export class MinimaxAccount extends Service {
     }
     catch (error) {
       this.state = { status: 'signed-out' }
-      this.markAttemptReachedStart?.()
+      // The attempt never started, so nobody waiting on the transition would
+      // ever be released. Hand them the cause instead; see `beginSignIn`.
+      this.markAttemptFailed?.(error)
       throw error
     }
 
@@ -265,16 +298,18 @@ export class MinimaxAccount extends Service {
       try {
         const grant = await refreshAccessToken(this.options.endpoints, refreshToken, this.options.client)
         await writeGrant(this.ctx, this.options.credentialsPath, grant, this.options.region)
+        // Absent keys stay absent — see `StoredCredential`; naming them with a
+        // possibly-undefined value would make this record unrepresentable.
         const next: StoredCredential = {
           schemaVersion: 1,
           clientId: stored.clientId,
           accessToken: grant.accessToken,
-          refreshToken: grant.refreshToken,
           expiresAtMs: grant.expiresAtMs,
           scopes: grant.scopes,
-          accountId: grant.accountId,
-          subject: grant.subject,
           region: this.options.region,
+          ...(grant.refreshToken === undefined ? {} : { refreshToken: grant.refreshToken }),
+          ...(grant.accountId === undefined ? {} : { accountId: grant.accountId }),
+          ...(grant.subject === undefined ? {} : { subject: grant.subject }),
         }
         this.state = { status: 'authenticated', accountId: next.accountId, expiresAtMs: next.expiresAtMs }
         return next

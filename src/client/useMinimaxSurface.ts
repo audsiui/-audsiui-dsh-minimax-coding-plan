@@ -7,6 +7,7 @@
  * one call was in flight.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { isRemoteFailure } from './isRemoteFailure.ts'
 import type { MinimaxSurfaceApi } from './index.ts'
 import type { RemoteAccountView, RemoteQuotaView } from '../types.ts'
 
@@ -77,8 +78,15 @@ export function useMinimaxSurface(api: MinimaxSurfaceApi): MinimaxSurfaceState {
       }
     }
     catch (failure) {
+      // `isRemoteFailure` is the one predicate that separates a Host or Gateway
+      // failure from a local defect (`docs/cookbook/adding-a-remote-api.zh.md:109`).
+      // A Remote call folds carrier trouble into the error branch and rejects
+      // only on an assembly fault, so anything it rejects here is a wiring bug
+      // this package shipped — it keeps travelling up instead of being painted
+      // on the page as a network error the operator cannot act on.
+      if (!isRemoteFailure(failure)) throw failure
       if (!alive.current) return
-      setError(failure instanceof Error ? failure.message : String(failure))
+      setError(failure.message)
     }
     finally {
       if (alive.current) setLoading(false)
@@ -117,7 +125,10 @@ export function useMinimaxSurface(api: MinimaxSurfaceApi): MinimaxSurfaceState {
     void action()
       .then(() => read())
       .catch((failure: unknown) => {
-        setError(failure instanceof Error ? failure.message : String(failure))
+        // Same split as `read`: a Host code becomes a message, a local defect
+        // stays a defect.
+        if (!isRemoteFailure(failure)) throw failure
+        setError(failure.message)
       })
       .finally(() => { setBusy(false) })
   }, [read])

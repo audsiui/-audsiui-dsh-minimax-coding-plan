@@ -61,21 +61,31 @@ if (!code.body?.device_code) {
 console.log('\nuser_code     :', code.body.user_code)
 console.log('verification  :', code.body.verification_uri_complete ?? code.body.verification_uri)
 
-// Poll a few times. Pending is the expected answer; the point is its exact shape.
-for (let attempt = 1; attempt <= 2; attempt++) {
+// Poll a few times at the cadence the server asked for. The interval is not
+// optional: an earlier version of this probe fired back-to-back, and the second
+// poll came back `400 {"error":"slow_down"}` — a rate-limit verdict, not the
+// pending signal the loop was written to observe. That made the run's own
+// comment ("Pending is the expected answer") wrong about its own output.
+const INTERVAL_MS = (typeof code.body.interval === 'number' && code.body.interval > 0
+  ? code.body.interval
+  : 5) * 1000
+const ATTEMPTS = 3
+
+for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+  if (attempt > 1) await new Promise(resolve => setTimeout(resolve, INTERVAL_MS))
   const token = await post('/oauth2/token', {
     grant_type: DEVICE_GRANT,
     device_code: code.body.device_code,
     client_id: CLIENT_ID,
     code_verifier: verifier,
   })
-  console.log(`\n=== POST /oauth2/token (poll ${attempt}) ->`, token.status, token.ok ? 'ok' : 'not ok')
+  console.log(`\n=== POST /oauth2/token (poll ${attempt}, after ${INTERVAL_MS}ms) ->`, token.status, token.ok ? 'ok' : 'not ok')
   console.log(JSON.stringify(shape(token.body), null, 2))
   if (token.ok && token.body?.access_token) {
     console.log('\nA token came back without a human approving — inspect the shape above.')
     break
   }
-  if (token.body?.status !== 'pending' && token.body?.error !== 'authorization_pending') break
+  if (token.body?.error !== 'authorization_pending' && token.body?.status !== 'pending') break
 }
 
 console.log('\nApprove', code.body.user_code, 'at', code.body.verification_uri_complete ?? code.body.verification_uri,

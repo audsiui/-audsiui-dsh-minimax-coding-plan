@@ -45,7 +45,8 @@
     "README.md"
   ],
   "scripts": {
-    "//scripts": "The build hook is prepack, never prepare. pnpm 11 runs only prepublish/prepack/publish when it builds a git-hosted dependency, but it *decides* to build whenever a prepare script exists. A prepare-only package therefore trips the allowBuilds gate and then silently builds nothing, so lib/ is committed and prepack keeps `pnpm pack` and `npm publish` honest. build:lib runs the two tsc passes that generate-typecheck and emit; tsdown bundles from their output rather than from source, because the Typert artifacts are generated TypeScript and the browser half compiles against a different set of peer declarations.",
+    "//scripts": "prepare is the git-install build. docs/user/develop/basic/publish.zh.md:167-170: a git install pulls sources, not artifacts, and nothing runs your build script unless you provide prepare — so a TypeScript package arrives with no lib/ and fails to load. The operator also has to authorize it (allowBuilds) before pnpm will run it; that is the documented cost of this distribution shape, not something the package can opt out of. It is self-contained: tsdown, typescript and lightningcss are ordinary devDependencies, and build:lib's two tsc passes resolve against this package's own tsconfigs rather than a monorepo checkout. lib/ stays committed as well, so an npm or tarball install has nothing to build and prepack keeps pnpm pack honest. build:lib runs the two tsc passes that generate-typecheck and emit; tsdown bundles from their output rather than from source, because the Typert artifacts are generated TypeScript and the browser half compiles against a different set of peer declarations.",
+    "prepare": "npm run build",
     "prepack": "npm run build",
     "generate:typert": "node build/generate-typert.mjs",
     "build:lib": "tsc -p tsconfig.host.json && tsc -p tsconfig.client.json && node build/copy-assets.mjs",
@@ -98,17 +99,39 @@
     "react": ">=18.2.0 <19.0.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/cordis-plugin-loader": { "optional": true },
-    "@deepseek-ai/dsh-api-remotes": { "optional": true },
-    "@deepseek-ai/dsh-client-connection": { "optional": true },
-    "@deepseek-ai/dsh-client-locale": { "optional": true },
-    "@deepseek-ai/dsh-client-runtime": { "optional": true },
-    "@deepseek-ai/dsh-client-ui-primitives": { "optional": true },
-    "@deepseek-ai/dsh-client-ui-settings": { "optional": true },
-    "@deepseek-ai/dsh-client-ui-slots": { "optional": true },
-    "@deepseek-ai/dsh-client-web-react": { "optional": true },
-    "@deepseek-ai/dsh-typert-protocol": { "optional": true },
-    "react": { "optional": true }
+    "@deepseek-ai/cordis-plugin-loader": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-api-remotes": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-locale": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-runtime": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-primitives": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-web-react": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "//deps": "zod is a real runtime dependency, not a peer: the generated Typert bundles import it to build their strict schemas and are published with it external, because the host's Typert registry owns the one instance those schemas are compiled against. A bundled copy would make the schemas unrecognisable to the host that has to accept them, so the host has to resolve it. clsx is build-time only — the client bundle inlines it, and lib/ is committed.",
   "dependencies": {
@@ -118,9 +141,9 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.4",
     "@deepseek-ai/cordis-plugin-loader": "^1.0.5",
+    "@deepseek-ai/dsh-anonymous-user-id": "0.2.0-rc.2",
     "@deepseek-ai/dsh-api-remotes": "0.2.0-rc.2",
     "@deepseek-ai/dsh-atomic-write": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-anonymous-user-id": "0.2.0-rc.2",
     "@deepseek-ai/dsh-attachment": "0.2.0-rc.2",
     "@deepseek-ai/dsh-authorization": "0.2.0-rc.2",
     "@deepseek-ai/dsh-client-connection": "0.2.0-rc.2",

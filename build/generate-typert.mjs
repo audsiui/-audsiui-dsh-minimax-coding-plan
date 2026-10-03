@@ -22,13 +22,6 @@ import { FaceModelEmitter, WorkspaceAnalyzer } from '@deepseek-ai/dsh-typert-gen
 const PACKAGE_ID = '@audsiui/dsh-minimax-coding-plan'
 /** Matches the real manifest name; the scratch workspace keeps it too. */
 const WORKSPACE_ID = PACKAGE_ID
-/** Matches manifest.exports + files for the two generated entries. */
-const GENERATED_FILES = [
-  'lib/typert.host.js',
-  'lib/typert.host.d.ts',
-  'lib/typert.remote-client.js',
-  'lib/typert.remote-client.d.ts',
-]
 
 const root = resolve(import.meta.dirname, '..')
 
@@ -108,18 +101,16 @@ try {
     },
   }
 
-  // The generator validates that the manifest actually publishes the two
-  // entries it is about to produce, so declare them in the copy it inspects.
-  manifest.exports['./typert'] = {
-    types: './lib/typert.host.d.ts',
-    default: './lib/typert.host.js',
-  }
-  manifest.exports['./remote'] = {
-    types: './lib/typert.remote-client.d.ts',
-    default: './lib/typert.remote-client.js',
-  }
-  manifest.files = [...new Set([...(manifest.files ?? []), ...GENERATED_FILES])]
-
+  // The manifest is passed through **as written**. `docs/api-gateway.zh.md:113`
+  // states the generator validates the package exports and the published file
+  // list, and only emits for a package carrying the right entries — so the
+  // `./typert` and `./remote` conditions and their `files` rows are exactly the
+  // input that check exists to consume. An earlier version of this script
+  // declared them into the copy it inspects, which meant the check ran against
+  // values the script had just written and could not fail on a manifest that
+  // was actually wrong. `validateExport` is only reachable from inside the
+  // analyzer's own generate pass, never from here.
+  //
   // The analyzer validates every declared export against a source file, and it
   // maps `lib/<name>.js` back to `src/<name>.ts`. The browser half ships as
   // `lib/client.js`, which that mapping resolves to a `src/client.ts` that
@@ -202,17 +193,20 @@ try {
     throw new Error('Typert emitted no Remote artifacts: the @Remote methods were not found')
   }
 
+  // Exactly the five artifacts `docs/api-gateway.zh.md:105-111` names, no sixth.
+  // A `remote-augmentation.d.ts` was written here once, byte-for-byte identical
+  // to `typert.remote-client.d.ts`; it shipped a file nothing declared and that
+  // the table does not list.
+  //
+  // `lib/` is emptied by build/clean.mjs before every build, so the generator's
+  // output is kept in src/generated/ and build/copy-assets.mjs puts the three
+  // declaration artifacts where `exports` and `files` point. Emitting them
+  // anywhere else would leave `exports` naming files that do not exist, and the
+  // only documented route by which a consumer picks up the declaration merge
+  // (`docs/api-gateway.zh.md:78`) would silently resolve to nothing.
   await Promise.all([
     writeFile(resolve(root, 'src/generated/host.ts'), artifact.js),
     writeFile(resolve(root, 'src/generated/remote.ts'), artifact.remote.js),
-    writeFile(resolve(root, 'src/generated/remote-augmentation.d.ts'), artifact.remote.dts),
-    // The two `types` conditions the manifest publishes. `docs/api-gateway.zh.md:109-113`
-    // names all five artifacts, and `lib/` is emptied by build/clean.mjs before every
-    // build, so the generator's own output is kept in src/generated/ and
-    // build/copy-assets.mjs puts it where the manifest points. Emitting them
-    // anywhere else would leave `exports` naming files that do not exist, and the
-    // only documented route by which a consumer picks up the declaration merge
-    // (`docs/api-gateway.zh.md:78`) would silently resolve to nothing.
     writeFile(resolve(root, 'src/generated/typert.host.d.ts'), artifact.dts),
     writeFile(resolve(root, 'src/generated/typert.remote-client.d.ts'), artifact.remote.dts),
     writeFile(resolve(root, 'src/generated/typert.remote-client.d.ts.map'), artifact.remote.dtsMap),
