@@ -453,6 +453,12 @@ export default defineConfig([
       neverBundle: PLATFORM_MODULES,
       // Everything the platform does not already provide is ours to ship.
       alwaysBundle: (id: string) => !PLATFORM_MODULES.includes(id),
+      // Stated so the "avoid unintended bundling of dependencies" hint goes
+      // away. It fires for every browser config whose bundle inlines anything,
+      // which is exactly this one: the module loader has no way to serve a
+      // dependency that the shell's frozen table does not already carry, so
+      // anything outside that table has to travel inside `client.js`.
+      onlyBundle: false,
     },
     // Dual-mode libraries (lexical's exports carry development/production/node
     // conditions; the node file picks its flavor with a top-level await a CJS
