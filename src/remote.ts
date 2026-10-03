@@ -92,7 +92,7 @@ function toWindow(window: QuotaWindow): RemoteQuotaWindow {
     usedPercent: window.usedPercent,
     resetAtMs: window.resetAtMs ?? null,
     remainsMs: window.remainsMs ?? null,
-    metered: window.metered,
+    present: window.present,
     status: window.status ?? null,
   }
 }

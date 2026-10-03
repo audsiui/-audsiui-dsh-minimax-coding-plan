@@ -250,8 +250,8 @@ check("the service's own remaining time is reported",
   generalWeekly.remainsMs === 121773467 && generalInterval.remainsMs === 2973467,
   `${generalWeekly.remainsMs} / ${generalInterval.remainsMs}`);
 check("the service's window status is carried verbatim", generalWeekly.status === 1, `${generalWeekly.status}`);
-check("counts of -1 read as an unmetered window", generalWeekly.metered === false, `${generalWeekly.metered}`);
-check("real counts read as a metered window", videoWeekly.metered === true, `${videoWeekly.metered}`);
+check("counts of -1 do not hide a live percentage allowance", generalWeekly.present === true, `${generalWeekly.present}`);
+check("both entries report a present window", videoWeekly.present === true, `${videoWeekly.present}`);
 check("one entry per model family, two windows each", parsed.windows.length === 4, `${parsed.windows.length}`);
 check("the models are kept apart", new Set(parsed.windows.map(w => w.model)).size === 2);
 check("fetchedAt is the injected clock", parsed.fetchedAtMs === 1_700_000_000_000);
@@ -266,11 +266,15 @@ check("a seconds-valued reset is lifted to millis",
   seconds.windows.find(w => w.window === "weekly").resetAtMs === 1_700_600_000_000,
   `${seconds.windows.find(w => w.window === "weekly").resetAtMs}`);
 
-// A body with no `model_remains` is a plan that meters nothing — not a shape
-// change to guess at, and not a window that reads as 0% used.
-const unmetered = await minimax.fetchQuota(quotaFor({ base_resp: { status_code: 0 } }));
-check("a body with no model_remains reports no windows at all",
-  unmetered.windows.length === 0, `${unmetered.windows.length}`);
+// An entry that carries none of a window's fields is genuinely absent. This is
+// the only thing that makes a window "unmetered": the counts, which are -1 on
+// the `general` entry above while its allowance is live at 6% / 150%.
+const bare = await minimax.fetchQuota(quotaFor({
+  model_remains: [{ model_name: "general", current_weekly_total_count: -1, current_weekly_used_count: -1 }],
+  base_resp: { status_code: 0 },
+}));
+check("an entry with no percentage fields is reported absent",
+  bare.windows.every(w => w.present === false), JSON.stringify(bare.windows.map(w => [w.window, w.present])));
 
 // An unrecognised model must still produce windows rather than being dropped.
 const unnamed = await minimax.fetchQuota(quotaFor({

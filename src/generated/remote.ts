@@ -10,7 +10,7 @@ const _audsiui_dsh_minimax_coding_plan_minimax_quota_result$schema = () => (_aud
   'usedPercent': z.number().readonly(),
   'resetAtMs': z.union([z.literal(null), z.number()]).readonly(),
   'remainsMs': z.union([z.literal(null), z.number()]).readonly(),
-  'metered': z.boolean().readonly(),
+  'present': z.boolean().readonly(),
   'status': z.union([z.literal(null), z.number()]).readonly(),
 })).readonly(),
   'fetchedAtMs': z.number().readonly(),

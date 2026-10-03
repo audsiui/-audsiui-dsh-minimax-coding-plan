@@ -68,7 +68,7 @@ function dotFor(status: string): 'done' | 'warning' | 'ongoing' | 'idle' {
 /** Render one model's allowance window as a labelled bar. */
 function UsageBar(props: { win: RemoteQuotaWindow; label: string; t: PageProps['t'] }): ReactElement {
   const { win, label, t } = props
-  if (!win.metered) {
+  if (!win.present) {
     return (
       <div className={styles.meter}>
         <div className={styles.meterHead}>

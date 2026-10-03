@@ -52,10 +52,15 @@ export interface RemoteQuotaWindow {
     /** Milliseconds left in the window, as the service counts them. */
     readonly remainsMs: number | null;
     /**
-     * False when the service's counts were `-1`, its way of saying the plan does
-     * not meter this window. The percentages are still present and are advisory.
+     * False when the response carried none of this window's fields.
+     *
+     * Decided by the percentage fields, which are what the surface draws. The
+     * service's `*_count` fields are deliberately not consulted: a `-1` there
+     * means there is no request-count quota attached, not that the window goes
+     * unmetered, and a real account reports `-1` counts alongside a live
+     * `6% / 150%` allowance.
      */
-    readonly metered: boolean;
+    readonly present: boolean;
     /** The service's own window status, verbatim. */
     readonly status: number | null;
 }

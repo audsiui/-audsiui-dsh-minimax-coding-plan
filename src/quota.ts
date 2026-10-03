@@ -48,11 +48,17 @@ export interface QuotaWindow {
   /** Milliseconds left in the window, as the server counts them. */
   readonly remainsMs: number | undefined
   /**
-   * False when the server's counts are `-1` for this window, which is how it
-   * says the plan does not meter it. Percentages are still present in that
-   * case and are reported as advisory.
+   * Whether the response carried this window's own fields.
+   *
+   * The `*_count` fields being `-1` does **not** mean the window is unmetered.
+   * That reading was tried and is wrong: a real account reports `-1` counts on
+   * the `general` entry and still reports a live `6% / 150%` weekly allowance,
+   * which the operator's own client displays for that same entry. `-1` means
+   * there is no request-count quota attached — the allowance is expressed purely
+   * as a share of a percentage — and the percentages are the real figure. A
+   * count-based quota is only one of the two ways this service meters.
    */
-  readonly metered: boolean
+  readonly present: boolean
   /** The server's own window status, verbatim. */
   readonly status: number | undefined
 }
@@ -140,11 +146,18 @@ function toStatus(value: unknown): number | undefined {
 }
 
 /**
- * The server marks a window unmetered by sending `-1` counts. A window is
- * metered when at least one of its counts is a real number.
+ * Whether the response carried this window's own fields.
+ *
+ * The `*_count` fields being `-1` does **not** mean the window is unmetered.
+ * That reading was tried and is wrong: a real account reports `-1` counts on the
+ * `general` entry and still reports a live `6% / 150%` weekly allowance, which
+ * the operator's own client displays for that same entry. `-1` means there is no
+ * request-count quota attached — the allowance is expressed purely as a share of
+ * a percentage — and the percentages are the real figure. A count-based quota is
+ * only one of the two ways this service meters.
  */
-function isMetered(total: unknown, used: unknown): boolean {
-  return (typeof total === 'number' && total >= 0) || (typeof used === 'number' && used >= 0)
+function isPresent(entry: Record<string, unknown>, ...fields: string[]): boolean {
+  return fields.some(field => entry[field] !== undefined)
 }
 
 /** Build one window from the paired total/used/status fields of a model entry. */
@@ -157,8 +170,6 @@ function readWindow(
   statusField: string,
   resetField: string,
   remainsField: string,
-  totalCountField: string,
-  usedCountField: string,
 ): QuotaWindow {
   return {
     model,
@@ -167,7 +178,10 @@ function readWindow(
     usedPercent: toUsed(entry[usedField]),
     resetAtMs: toEpochMs(entry[resetField]),
     remainsMs: toDurationMs(entry[remainsField]),
-    metered: isMetered(entry[totalCountField], entry[usedCountField]),
+    // Presence is decided by the window's own percentage fields, which are the
+    // figures the surface draws. The `*_count` fields are not consulted: see
+    // QuotaWindow.present for why -1 there does not mean "unmetered".
+    present: isPresent(entry, totalField, usedField, statusField, resetField),
     status: toStatus(entry[statusField]),
   }
 }
@@ -247,12 +261,10 @@ export async function fetchQuota(options: QuotaClientOptions): Promise<QuotaSnap
     windows.push(
       readWindow(entry, model, 'interval',
         'current_interval_total_percent', 'current_interval_used_percent',
-        'current_interval_status', 'end_time', 'remains_time',
-        'current_interval_total_count', 'current_interval_used_count'),
+        'current_interval_status', 'end_time', 'remains_time'),
       readWindow(entry, model, 'weekly',
         'current_weekly_total_percent', 'current_weekly_used_percent',
-        'current_weekly_status', 'weekly_end_time', 'weekly_remains_time',
-        'current_weekly_total_count', 'current_weekly_used_count'),
+        'current_weekly_status', 'weekly_end_time', 'weekly_remains_time'),
     )
   }
 

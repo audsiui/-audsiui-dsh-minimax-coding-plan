@@ -41,11 +41,17 @@ export interface QuotaWindow {
     /** Milliseconds left in the window, as the server counts them. */
     readonly remainsMs: number | undefined;
     /**
-     * False when the server's counts are `-1` for this window, which is how it
-     * says the plan does not meter it. Percentages are still present in that
-     * case and are reported as advisory.
+     * Whether the response carried this window's own fields.
+     *
+     * The `*_count` fields being `-1` does **not** mean the window is unmetered.
+     * That reading was tried and is wrong: a real account reports `-1` counts on
+     * the `general` entry and still reports a live `6% / 150%` weekly allowance,
+     * which the operator's own client displays for that same entry. `-1` means
+     * there is no request-count quota attached — the allowance is expressed purely
+     * as a share of a percentage — and the percentages are the real figure. A
+     * count-based quota is only one of the two ways this service meters.
      */
-    readonly metered: boolean;
+    readonly present: boolean;
     /** The server's own window status, verbatim. */
     readonly status: number | undefined;
 }
