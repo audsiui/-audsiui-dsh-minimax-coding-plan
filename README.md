@@ -283,6 +283,16 @@ commit.** `lib/` is tracked on purpose (see the git-install note above), so a
 commit that changes the source without rebuilding leaves every git installer on
 the stale build with no error to tell them so.
 
+**Reinstalling a git dependency requires restarting the host, not just the
+plugin.** Node caches an ES module per process, so re-running `dsh plugin add`
+— or any in-app reload — re-`import()`s the same URL and gets the namespace it
+loaded before, default export and all. A fix that is correct on disk can
+therefore keep failing in a host that never restarted. Quit the whole
+application (including any tray or background process), reinstall, then start
+it again. Note that the error's line number does not help you tell the two
+builds apart: a change at the end of `src/index.ts` leaves every earlier line
+number untouched.
+
 `smoke.ts` runs the pure modules against the real endpoint: a device-authorization
 request, one poll of an unapproved grant (exactly one HTTP request — it must not
 fabricate a token or spin), a rejected refresh, the undeployed revoke route, and
