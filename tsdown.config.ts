@@ -1,86 +1,112 @@
-import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { dirname, relative, resolve } from 'node:path'
+import { existsSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
+import { basename, dirname, isAbsolute, resolve, sep } from 'node:path'
+import { transform } from 'lightningcss'
 import { defineConfig } from 'tsdown'
 
-/** Entry name the browser loader looks the package up by. */
+/** Plugin id, stamped into the __ModuleLoader__ handoff and onto injected tags. */
 const PACKAGE_ID = '@audsiui/dsh-minimax-coding-plan'
 
-/** Marker id for the one stylesheet this package owns. */
-const CSS_PREFIX = '\0minimax-css:'
+/**
+ * Virtual-id wrapper keeping module CSS away from tsdown's own css pipeline
+ * (which requires @tsdown/css). The suffix matters: tsdown's guard matches ids
+ * ending in `.css`, so the virtual id must not.
+ *
+ * These four constants and the two helpers below reproduce
+ * `packages/client/tsdown.client.ts` — the `clientBundle` preset that
+ * `docs/cookbook/adding-a-settings-card.zh.md:60` names as the way a package
+ * outside this repository builds its browser half. The preset is not published,
+ * so the recipe is restated here rather than reinvented: an earlier hand-rolled
+ * version of this file built the query selector by string concatenation of an
+ * already-quoted attribute value and shipped `"style[data-plugin-css="…"]"`,
+ * which is not a selector, and it stamped only one of the two dataset keys the
+ * module system reads when it reclaims a module's own styles.
+ */
+const CSS_VIRTUAL_PREFIX = '\0dsh-css:'
+const CSS_VIRTUAL_SUFFIX = '.mjs'
+
+/** Path segment separating this package's tsc output from the sources it came from. */
+const TYPES_MARKER = `${sep}lib${sep}client-types${sep}`
 
 /**
- * A class selector: a dot followed by an identifier that cannot start with a
- * digit. That is what keeps `0.5px`, `0.999` and `1.5` out of the rewrite.
+ * Resolve an emitted-JS asset import against its source-tree counterpart.
+ * @param source - relative import specifier as written in the source.
+ * @param importer - absolute path of the importing module, emitted or source.
+ * @returns the stylesheet on disk.
  */
-const CLASS_SELECTOR = /\.(-?[_a-zA-Z]+[_a-zA-Z0-9-]*)/g
+function sourceAssetPath(source: string, importer: string): string {
+  if (!source.startsWith('.') && !isAbsolute(source)) return createRequire(importer).resolve(source)
+  const emitted = resolve(dirname(importer), source)
+  if (existsSync(emitted)) return emitted
+  const boundary = emitted.indexOf(TYPES_MARKER)
+  if (boundary < 0) return emitted
+  return resolve(emitted.slice(0, boundary), 'src', emitted.slice(boundary + TYPES_MARKER.length))
+}
 
 /**
- * Turn a `.module.css` import into a scoped class map plus a live `<style>`.
+ * Emit one plugin-owned style injector and the CSS Modules class map.
  *
- * Two rules from `docs/web-styling.zh.md` shape this: component styles are CSS
- * Modules living beside the component (`:11`, `:17`), and `./client` has to be
- * a single lazy-CJS script with no second request
- * (`docs/cookbook/adding-a-settings-card.zh.md:60`). Extracting to a sibling
- * `style.css` would satisfy neither — the page would load unstyled with no
- * error to say so.
+ * The selector is assembled by concatenating a quoted attribute value onto a
+ * quoted attribute name, never by wrapping an already-quoted value in quotes of
+ * its own. Both dataset keys are written: `data-plugin` identifies the owning
+ * entry, `data-plugin-css` identifies this stylesheet within it, and the module
+ * system reclaims the tag through them
+ * (`packages/client/modules/README.zh.md`, entry-lifecycle reclaims a module's
+ * own styles) — so the entry does not dispose of the tag itself.
  *
- * The scoping pass is deliberately small: it rewrites class selectors in a file
- * this package authors, and that file uses no `:global`, no nesting, and no
- * `url()` or string literal that could hide a dot. Comments are stripped first
- * so a commented-out selector cannot be renamed.
+ * @param id - owning plugin id.
+ * @param fileId - absolute path of the physical stylesheet.
+ * @param css - compiled stylesheet text.
+ * @param classMap - local name to scoped name, for a CSS Modules import.
+ * @returns the module source.
  */
-const inlineStylesheet = {
-  name: 'minimax-inline-stylesheet',
+function styleInjectionModule(
+  id: string,
+  fileId: string,
+  css: string,
+  classMap?: Readonly<Record<string, string>>,
+): string {
+  const source = [
+    `const css = ${JSON.stringify(css)};`,
+    `const tagId = ${JSON.stringify(`${id}/${basename(fileId)}`)};`,
+    'if (typeof document !== \'undefined\' && document.querySelector(\'style[data-plugin-css=\' + JSON.stringify(tagId) + \']\') === null) {',
+    '  const tag = document.createElement(\'style\');',
+    `  tag.dataset.plugin = ${JSON.stringify(id)};`,
+    '  tag.dataset.pluginCss = tagId;',
+    '  tag.textContent = css;',
+    '  document.head.appendChild(tag);',
+    '}',
+  ]
+  source.push(classMap === undefined ? 'export {};' : `export default ${JSON.stringify(classMap)};`)
+  return source.join('\n')
+}
+
+/** CSS Modules: hash the classes with lightningcss and inject the result. */
+const cssModulesInline = {
+  name: 'dsh-css-modules-inline',
   resolveId(source: string, importer?: string) {
-    if (!source.endsWith('.css') || importer === undefined) return null
-    // `source` is relative to whoever imported it, and that importer lives in
-    // the emitted tree, not the source tree — which is what build/copy-client-
-    // assets.mjs puts the stylesheet next to. The `.css` suffix is dropped from
-    // the id: a virtual id that still ends in `.css` is claimed by rolldown's own
-    // stylesheet pipeline before this hook is consulted.
-    return CSS_PREFIX + resolve(dirname(importer), source).slice(0, -'.css'.length)
+    if (!source.endsWith('.module.css')) return null
+    const abs = importer !== undefined ? sourceAssetPath(source, importer) : source
+    return CSS_VIRTUAL_PREFIX + abs + CSS_VIRTUAL_SUFFIX
   },
-  load(id: string) {
-    if (!id.startsWith(CSS_PREFIX)) return null
-    const file = `${id.slice(CSS_PREFIX.length)}.css`
-    const source = readFileSync(file, 'utf8')
-    // Hashed from the package-relative path so the name is stable across builds
-    // and still distinct from any other file's classes.
-    const hash = createHash('sha256')
-      .update(relative(resolve(import.meta.dirname, '..'), file).split('\\').join('/'))
-      .digest('hex')
-      .slice(0, 8)
-
-    const names = new Set<string>()
-    for (const match of source.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(CLASS_SELECTOR)) {
-      names.add(match[1]!)
-    }
-    const classes: Record<string, string> = {}
-    for (const name of names) classes[name] = `${name}_${hash}`
-
-    const scoped = source
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(CLASS_SELECTOR, (_, name: string) => `.${classes[name] ?? name}`)
-
-    const selector = `"style[data-plugin-css=${JSON.stringify(PACKAGE_ID)}]"`
-    return [
-      `const css=${JSON.stringify(scoped)};`,
-      `const classes=${JSON.stringify(classes)};`,
-      `const selector='${selector}';`,
-      'export function disposeStylesheet(){',
-      '  if(typeof document==="undefined")return;',
-      '  const el=document.querySelector(selector);',
-      '  if(el)el.remove();',
-      '}',
-      'if(typeof document!=="undefined"&&!document.querySelector(selector)){',
-      '  const el=document.createElement("style");',
-      `  el.dataset.pluginCss=${JSON.stringify(PACKAGE_ID)};`,
-      '  el.textContent=css;',
-      '  document.head.appendChild(el);',
-      '}',
-      'export default classes;',
-    ].join('\n')
+  async load(this: { addWatchFile: (file: string) => void }, virtualId: string) {
+    if (!virtualId.startsWith(CSS_VIRTUAL_PREFIX)) return null
+    const fileId = virtualId.slice(CSS_VIRTUAL_PREFIX.length, -CSS_VIRTUAL_SUFFIX.length)
+    // Otherwise the virtual id hides the physical stylesheet from the watch graph.
+    this.addWatchFile(fileId)
+    const source = await readFile(fileId)
+    const { code, exports: cssExports } = transform({
+      filename: fileId,
+      code: source,
+      cssModules: { pattern: '[hash]_[local]' },
+      minify: true,
+    })
+    const classMap: Record<string, string> = {}
+    const exportEntries = Object.entries(cssExports ?? {})
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+    for (const [local, exported] of exportEntries) classMap[local] = exported.name
+    return styleInjectionModule(PACKAGE_ID, fileId, code.toString(), classMap)
   },
 }
 
@@ -176,19 +202,26 @@ export default defineConfig([
     dts: false,
     sourcemap: true,
     clean: false,
-    minify: true,
+    // The preset does not minify the JavaScript either: minification renames
+    // the private `module`/`exports` pair the loader contract depends on, and
+    // the stylesheet is already minified by lightningcss above.
     fixedExtension: false,
     deps: {
       neverBundle: PLATFORM_MODULES,
       // Everything the platform does not already provide is ours to ship.
       alwaysBundle: (id: string) => !PLATFORM_MODULES.includes(id),
     },
-    plugins: [inlineStylesheet],
+    plugins: [cssModulesInline],
     outputOptions: {
       entryFileNames: 'client.js',
-      banner: `window.__ModuleLoader__.load({id:${JSON.stringify(PACKAGE_ID)},factory:(require)=>{`,
-      intro: 'var module={exports:{}};var exports=module.exports;',
-      footer: 'return module.exports;}});',
+      // The three-part handoff, spelled as `packages/client/tsdown.client.ts`
+      // spells it. A bundle that does not open with the registration, or that
+      // closes without returning the private exports, loads as a script that
+      // exports nothing — and that surfaces as a plugin row that simply never
+      // registers.
+      banner: `window.__ModuleLoader__.load({ id: ${JSON.stringify(PACKAGE_ID)}, factory: (require) => {`,
+      intro: 'var module = { exports: {} }; var exports = module.exports;',
+      footer: 'return module.exports; } });',
     },
   },
 ])

@@ -32,7 +32,6 @@ import type { TypertRemoteContribution, TypertRemoteNamespaceMap } from '@deepse
 import remoteContribution from '../generated/remote.ts'
 import type { RemoteAccountView, RemoteQuotaView } from '../types.ts'
 import { MinimaxPage } from './MinimaxPage.tsx'
-import { disposeStylesheet } from './MinimaxPage.module.css'
 import { en, zh, type MinimaxLocaleKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -80,7 +79,7 @@ export interface MinimaxSurfaceApi {
  * `remote/unavailable`, which is a far worse failure than an absent surface.
  *
  * @param ctx - the browser half's context.
- * @returns a disposer that withdraws the namespace and the stylesheet.
+ * @returns a disposer that withdraws the namespace.
  */
 export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const disposeRemote = await ctx.remote.$mount(remoteContribution as TypertRemoteContribution)
@@ -133,11 +132,10 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     inject: () => api,
   }, MinimaxPage))
 
-  return async () => {
-    // The module system owns stylesheet reclamation for the entries it maps
-    // (`docs/subsystems/client-modules.zh.md:108`); the tag this bundle injects
-    // is not one it can reach, so the entry hands it back on the way out.
-    disposeStylesheet()
-    await disposeRemote()
-  }
+  // The injected stylesheet is not disposed here. The client module system
+  // reclaims a module's own styles when it tears the entry's fiber down
+  // (`packages/client/modules/README.zh.md`), by the `data-plugin` /
+  // `data-plugin-css` keys the bundle's injector writes. A disposer of our own
+  // would either double-remove or race that path.
+  return disposeRemote
 }

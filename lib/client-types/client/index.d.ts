@@ -38,7 +38,7 @@ export interface MinimaxSurfaceApi {
  * `remote/unavailable`, which is a far worse failure than an absent surface.
  *
  * @param ctx - the browser half's context.
- * @returns a disposer that withdraws the namespace and the stylesheet.
+ * @returns a disposer that withdraws the namespace.
  */
 export declare function apply(ctx: ClientContext): Promise<() => Promise<void>>;
 //# sourceMappingURL=index.d.ts.map
