@@ -1,1 +1,1 @@
-{"version":3,"file":"typert.remote-client.d.ts","names":["plan","quota","signIn","signOut","state"],"sources":["../src/remote.ts"],"sourcesContent":[null],"mappings":";;;;;;;;;IA6QQA,I;IAtCAC,K;IAvCAC,M;IAoBAC,O;IA7CNC,K;;;IAsGMJ,c;IAtCAC,e;IAvCAC,gB;IAoBAC,iB;IA7CNC,e","ignoreList":[]}
+{"version":3,"file":"typert.remote-client.d.ts","names":["plan","quota","signIn","signOut","state"],"sources":["../src/remote.ts"],"sourcesContent":[null],"mappings":";;;;;;;;;IAoRQA,I;IAtCAC,K;IAvCAC,M;IAoBAC,O;IA7CAC,K;;;IAsGAJ,c;IAtCAC,e;IAvCAC,gB;IAoBAC,iB;IA7CAC,e","ignoreList":[]}

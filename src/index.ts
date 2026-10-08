@@ -9,20 +9,33 @@
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-authorization'
-import { ACCOUNT_QUOTA_EXCEEDED_CODE, LlmError, QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm'
-import {
-  catalogModelInfo,
-  plainOptions,
-  registerDeepSeekProvider,
-  resolveAdapterOptions,
-  type DeepSeekRequestAuth,
-  type ResolvedDeepSeekOptions,
-} from '@deepseek-ai/dsh-llm-deepseek'
+import { registerDeepSeekProvider } from '@deepseek-ai/dsh-llm-deepseek'
 import { MinimaxAccount } from './account.ts'
 import { registerMinimaxAuthorization } from './authorization.ts'
 import { MinimaxRemoteService } from './remote.ts'
 import { Config, endpointsFor } from './config.ts'
+import { createMinimaxProviderBinding } from './provider.ts'
 
+/**
+ * The published interface of the MiniMax Coding Plan provider.
+ *
+ * Everything a consumer needs and nothing else: the Cordis plugin entry, the
+ * configuration schema, the account service, the Remote service the browser half
+ * is dispatched through, and the wire vocabulary those two are described in.
+ *
+ * What used to be here as well — the credential encoders, the authenticated
+ * read, the two readers, the OAuth protocol client — is implementation, and its
+ * own modules say so. `read.ts` is explicit that it "is not part of the published
+ * interface"; shipping it under `.` contradicted that and asked every consumer to
+ * learn it. Those symbols are reachable through the `./testing` entry instead,
+ * which is the seam the verification gates cross and which is named for what it
+ * is. See `src/testing.ts`.
+ *
+ * The rule this barrel follows: a symbol earns a place here if a caller outside
+ * this package has to know it to use the plugin correctly. The credential key
+ * does — it identifies the stored grant in the harness's own credential surface.
+ * The grant encoders do not; they are how the plugin happens to persist one.
+ */
 export { Config, defaultCredentialsPath, endpointsFor } from './config.ts'
 export { registerMinimaxAuthorization } from './authorization.ts'
 export { MinimaxRemoteService, type MinimaxRemoteOptions } from './remote.ts'
@@ -36,11 +49,13 @@ export type {
   RemoteQuotaWindowId,
   RemoteSignInFailure,
 } from './types.ts'
-export { failedPlan, fetchPlan, type PlanClientOptions } from './plan.ts'
-export { fetchQuota, QuotaAuthError, QuotaNetworkError, type QuotaClientOptions } from './quota.ts'
-export { readJson, ReadError, type ReadClient, type ReadFailure, type ReadRequest } from './read.ts'
-export { GRANT_KEY, grantPayload, parseGrantPayload, readGrant, writeGrant, clearGrant } from './grant.ts'
-export { MinimaxAccount, type MinimaxAccountOptions, type MinimaxAccountState } from './account.ts'
+export { GRANT_KEY } from './grant.ts'
+export {
+  MinimaxAccount,
+  type MinimaxAccountOptions,
+  type MinimaxAccountReader,
+  type MinimaxAccountState,
+} from './account.ts'
 export {
   OAUTH_AUDIENCE,
   OAUTH_CLIENT_ID,
@@ -50,17 +65,6 @@ export {
   type Region,
   type RegionEndpoints,
 } from './constants.ts'
-export {
-  OAuthProtocolError,
-  pollDeviceToken,
-  refreshAccessToken,
-  requestDeviceAuthorization,
-  revokeRefreshToken,
-  type DeviceAuthorization,
-  type OAuthClientOptions,
-  type TokenGrant,
-} from './oauth.ts'
-export { clearCredential, readCredential, writeCredential, type StoredCredential } from './store.ts'
 
 export const name = 'llm-minimax-coding-plan'
 export const inject = ['llm']
@@ -74,8 +78,7 @@ const PROVIDER = 'minimax-coding-plan'
  * @param config - parsed plugin configuration.
  */
 export function apply(ctx: Context, config: Config): void {
-  const region = config.region
-  const endpoints = endpointsFor(region)
+  const endpoints = endpointsFor(config.region)
 
   // Offered as a harness authorization flow rather than only as a service
   // method: the seam owns cancellation, one-attempt-per-key, and commit
@@ -87,7 +90,7 @@ export function apply(ctx: Context, config: Config): void {
 
   const account = new MinimaxAccount(ctx, {
     endpoints,
-    region,
+    region: config.region,
     credentialsPath: config.credentialsPath,
     openBrowser: config.openBrowser,
   })
@@ -99,48 +102,8 @@ export function apply(ctx: Context, config: Config): void {
   new MinimaxRemoteService(ctx, {
     account,
     endpoints,
-    region,
+    region: config.region,
   })
-
-  // `baseURL` and `models` stay volatile so a settings edit reaches the next
-  // request without re-registering the adapter; read them per operation.
-  const options = (): ResolvedDeepSeekOptions => {
-    const plain = plainOptions(config)
-    return resolveAdapterOptions({ ...plain, baseURL: plain.baseURL ?? endpoints.inferenceOrigin })
-  }
-
-  const resolveAuth = async (connection: ResolvedDeepSeekOptions): Promise<DeepSeekRequestAuth> => {
-    const token = await account.resolveToken(connection.baseURL)
-    if (token === undefined) {
-      throw new LlmError(
-        'Sign in to MiniMax to use the Coding Plan provider. Run the `llm-minimax-coding-plan` sign-in, or enable automatic sign-in.',
-        'ACCOUNT_SIGN_IN_REQUIRED',
-      )
-    }
-    return {
-      headers: { Authorization: `Bearer ${token}` },
-      onRequestError: async (error) => {
-        if (!(error instanceof LlmError)) return error
-        if (error.code === QUOTA_EXCEEDED_CODE) {
-          return new LlmError(error.message, ACCOUNT_QUOTA_EXCEEDED_CODE, { ...error.failure, cause: error })
-        }
-        if (error.failure.status !== 401) return error
-        // Drop the rejected token only while it is still the stored one, so a
-        // late 401 from a superseded request cannot sign out a fresh session.
-        try {
-          await account.rejectToken(token)
-        }
-        catch (error) {
-          ctx.logger.warn('minimax-coding-plan: could not retire the rejected token: %o', error)
-        }
-        return new LlmError(
-          'The MiniMax access token was rejected. Sign in again to continue.',
-          'ACCOUNT_TOKEN_INVALID',
-          { ...error.failure, cause: error },
-        )
-      },
-    }
-  }
 
   ctx.llm.registerConfigurableProviders([{
     provider: PROVIDER,
@@ -149,22 +112,11 @@ export function apply(ctx: Context, config: Config): void {
     settingsPath: [],
   }])
 
+  // The provider is the account: how a request gets its bearer, and what a
+  // rejection means, are decided in `provider.ts` rather than here.
   registerDeepSeekProvider(ctx, PROVIDER, {
-    options,
-    resolveAuth,
+    ...createMinimaxProviderBinding(ctx, account, config, endpoints),
     providerName: 'MiniMax Coding Plan',
-    discoverModels: async (provider) => {
-      try {
-        await resolveAuth(options())
-      }
-      catch (error) {
-        // A signed-out account is a normal state, not a discovery failure:
-        // report no models so the selector asks for sign-in instead of erroring.
-        if (error instanceof LlmError && error.code === 'ACCOUNT_SIGN_IN_REQUIRED') return []
-        throw error
-      }
-      return options().models.map(model => catalogModelInfo(provider, model))
-    },
   })
 }
 

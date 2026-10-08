@@ -1,3 +1,7 @@
+/**
+ * Account service owning the MiniMax credential: one interactive device
+ * authorization, then a self-refreshing access token.
+ */
 import { Context, Service } from '@deepseek-ai/cordis';
 import { type RegionEndpoints } from './constants.ts';
 import { type OAuthClientOptions } from './oauth.ts';
@@ -40,13 +44,41 @@ export interface MinimaxAccountOptions {
     readonly client?: OAuthClientOptions;
 }
 /**
+ * What a consumer of the account needs, stated as an interface rather than a class.
+ *
+ * The service is a Cordis `Service`, which the host hands out through a tracking
+ * proxy — so depending on the class means depending on the whole thing, lifecycle
+ * and private state included. The readers on the other side of the seam
+ * ([`MinimaxRemoteService`](./remote.ts) and the provider binding) use three
+ * methods and nothing else, and naming that makes it a seam with two adapters
+ * rather than a convention: the real service, and the hand-written stand-ins the
+ * tests drive the readers with.
+ */
+export interface MinimaxAccountReader {
+    /**
+     * This process's cached reading. Signed out until something has read the
+     * stored grant this process; see {@link MinimaxAccountReader.currentState}.
+     */
+    getState(): MinimaxAccountState;
+    /** The account state, resolved from storage when this process has not read it. */
+    currentState(): Promise<MinimaxAccountState>;
+    /** Begin a device-authorization attempt and resolve once it is under way. */
+    beginSignIn(): Promise<MinimaxAccountState>;
+    /** Revoke and remove the grant. Local state is cleared even if revocation fails. */
+    signOut(): Promise<MinimaxAccountState>;
+    /** Drop a token the inference endpoint rejected, if it is still the stored one. */
+    rejectToken(token: string): Promise<void>;
+    /** Resolve a usable access token for a destination, refreshing when it is close to expiry. */
+    resolveToken(url: string): Promise<string | undefined>;
+}
+/**
  * MiniMax Coding Plan credentials.
  *
  * The service hands out a token only for the origins this plugin is
  * configured with, so a misrouted request cannot leak the grant to a host
  * that happens to receive the header.
  */
-export declare class MinimaxAccount extends Service {
+export declare class MinimaxAccount extends Service implements MinimaxAccountReader {
     private readonly options;
     private state;
     private signInAttempt;
@@ -57,8 +89,33 @@ export declare class MinimaxAccount extends Service {
     private markAttemptFailed;
     /** @param ctx - context owning this account. @param options - endpoints, storage, and test seams. */
     constructor(ctx: Context, options: MinimaxAccountOptions);
-    /** Read the current account state. */
+    /**
+     * This process's cached reading of the account state.
+     *
+     * It starts signed out and only becomes true once something has read the
+     * stored grant in this process — a Host restart leaves it that way even
+     * though the credential is on disk and perfectly usable. A caller asking
+     * "who is signed in" wants {@link currentState}; this exists for the callers
+     * that legitimately want the cheap, possibly-stale answer, which is the code
+     * running immediately after {@link currentState} or {@link resolveToken}.
+     */
     getState(): MinimaxAccountState;
+    /**
+     * The account state, resolved from storage.
+     *
+     * This is the answer to "who is signed in", and the only one that survives a
+     * restart: the state is cached in memory and nothing reads the persisted grant
+     * until a token is actually needed, so a Host started with a valid grant on
+     * disk would otherwise report itself signed out to every surface until the
+     * operator happened to send a message.
+     *
+     * It does **not** refresh. A grant inside its refresh margin is still a grant,
+     * and refreshing is {@link resolveToken}'s job; keeping the two apart is what
+     * stops a surface poll from minting tokens.
+     *
+     * @returns the state, and caches it for {@link getState}.
+     */
+    currentState(): Promise<MinimaxAccountState>;
     /**
      * Begin a device-authorization attempt and resolve once it is actually under
      * way, returning the `authorizing` state that carries the code.
@@ -130,12 +187,15 @@ export declare class MinimaxAccount extends Service {
     /** Run one device authorization end to end. */
     private runSignIn;
     /**
-     * Refresh one stored grant, collapsing concurrent callers onto one request.
+     * Refresh the stored grant, collapsing concurrent callers onto one request.
      *
-     * @param stored - the record being refreshed, for the fields carried forward.
-     * @param refreshToken - the non-undefined refresh token; `resolveToken` has
-     *   already handled the no-refresh-token case, and taking it as a parameter
-     *   keeps that guarantee visible here rather than re-asserted.
+     * The new record is rebuilt from the refresh response rather than patched onto
+     * the old one, so a server that rotates the refresh token — and one that does
+     * not — both leave a record the next reader can validate.
+     *
+     * @param refreshToken - the stored refresh token. `resolveToken` has already
+     *   handled the case where there is none, so taking it as a parameter keeps
+     *   that guarantee visible here rather than re-asserted.
      */
     private refreshStored;
     /**
@@ -151,7 +211,4 @@ export declare class MinimaxAccount extends Service {
     /** Configured origins permitted to receive the grant. */
     private allowedOrigins;
 }
-/** Open a URL with the platform's default handler; failures are non-fatal. */
-export declare function openExternal(url: string): void;
-export default MinimaxAccount;
 //# sourceMappingURL=account.d.ts.map

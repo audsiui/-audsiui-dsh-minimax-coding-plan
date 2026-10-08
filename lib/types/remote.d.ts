@@ -16,7 +16,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import { RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol';
-import { MinimaxAccount } from './account.ts';
+import type { MinimaxAccountReader } from './account.ts';
 import type { RegionEndpoints } from './constants.ts';
 import type { RemoteAccountView, RemotePlanView, RemoteQuotaView } from './types.ts';
 declare module '@deepseek-ai/cordis' {
@@ -35,7 +35,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 /** Collaborators and settings the Remote surface needs. */
 export interface MinimaxRemoteOptions {
     /** The credential the surface's buttons act on. */
-    readonly account: MinimaxAccount;
+    readonly account: MinimaxAccountReader;
     /** Region origins; `quotaOrigin` and `agentOrigin` are read. */
     readonly endpoints: RegionEndpoints;
     /** Region name, reported back so a surface can show it. */
@@ -66,9 +66,12 @@ export declare class MinimaxRemoteService extends TypertRemoteService {
     private resolveGrant;
     /**
      * Current account state. The surface's poll target.
+     *
+     * Reads the persisted grant rather than the cached value, so a Host that has
+     * just restarted reports the account it actually has instead of an empty one.
      * @returns the display projection; never carries a token.
      */
-    state(): RemoteAccountView;
+    state(): Promise<RemoteAccountView>;
     /**
      * Begin a device-authorization attempt and return once it is under way.
      *

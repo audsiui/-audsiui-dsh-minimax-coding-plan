@@ -2,7 +2,6 @@
  * Account service owning the MiniMax credential: one interactive device
  * authorization, then a self-refreshing access token.
  */
-import { spawn } from 'node:child_process'
 import { Context, Service } from '@deepseek-ai/cordis'
 import { TOKEN_REFRESH_MARGIN_MS, type RegionEndpoints } from './constants.ts'
 import {
@@ -15,7 +14,8 @@ import {
   type OAuthClientOptions,
 } from './oauth.ts'
 import { clearGrant, readGrant, writeGrant } from './grant.ts'
-import { type StoredCredential } from './store.ts'
+import { openExternal } from './openExternal.ts'
+import { toStoredCredential, type StoredCredential } from './store.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Events {
@@ -56,13 +56,42 @@ export interface MinimaxAccountOptions {
 }
 
 /**
+ * What a consumer of the account needs, stated as an interface rather than a class.
+ *
+ * The service is a Cordis `Service`, which the host hands out through a tracking
+ * proxy — so depending on the class means depending on the whole thing, lifecycle
+ * and private state included. The readers on the other side of the seam
+ * ([`MinimaxRemoteService`](./remote.ts) and the provider binding) use three
+ * methods and nothing else, and naming that makes it a seam with two adapters
+ * rather than a convention: the real service, and the hand-written stand-ins the
+ * tests drive the readers with.
+ */
+export interface MinimaxAccountReader {
+  /**
+   * This process's cached reading. Signed out until something has read the
+   * stored grant this process; see {@link MinimaxAccountReader.currentState}.
+   */
+  getState(): MinimaxAccountState
+  /** The account state, resolved from storage when this process has not read it. */
+  currentState(): Promise<MinimaxAccountState>
+  /** Begin a device-authorization attempt and resolve once it is under way. */
+  beginSignIn(): Promise<MinimaxAccountState>
+  /** Revoke and remove the grant. Local state is cleared even if revocation fails. */
+  signOut(): Promise<MinimaxAccountState>
+  /** Drop a token the inference endpoint rejected, if it is still the stored one. */
+  rejectToken(token: string): Promise<void>
+  /** Resolve a usable access token for a destination, refreshing when it is close to expiry. */
+  resolveToken(url: string): Promise<string | undefined>
+}
+
+/**
  * MiniMax Coding Plan credentials.
  *
  * The service hands out a token only for the origins this plugin is
  * configured with, so a misrouted request cannot leak the grant to a host
  * that happens to receive the header.
  */
-export class MinimaxAccount extends Service {
+export class MinimaxAccount extends Service implements MinimaxAccountReader {
   // Declared with TypeScript `private`, not ES `#private`: a Cordis `Service` is
   // handed out through a tracking proxy, and native private fields are not
   // reachable from a proxy that wraps the instance.
@@ -81,8 +110,44 @@ export class MinimaxAccount extends Service {
     this.options = options
   }
 
-  /** Read the current account state. */
+  /**
+   * This process's cached reading of the account state.
+   *
+   * It starts signed out and only becomes true once something has read the
+   * stored grant in this process — a Host restart leaves it that way even
+   * though the credential is on disk and perfectly usable. A caller asking
+   * "who is signed in" wants {@link currentState}; this exists for the callers
+   * that legitimately want the cheap, possibly-stale answer, which is the code
+   * running immediately after {@link currentState} or {@link resolveToken}.
+   */
   getState(): MinimaxAccountState {
+    return this.state
+  }
+
+  /**
+   * The account state, resolved from storage.
+   *
+   * This is the answer to "who is signed in", and the only one that survives a
+   * restart: the state is cached in memory and nothing reads the persisted grant
+   * until a token is actually needed, so a Host started with a valid grant on
+   * disk would otherwise report itself signed out to every surface until the
+   * operator happened to send a message.
+   *
+   * It does **not** refresh. A grant inside its refresh margin is still a grant,
+   * and refreshing is {@link resolveToken}'s job; keeping the two apart is what
+   * stops a surface poll from minting tokens.
+   *
+   * @returns the state, and caches it for {@link getState}.
+   */
+  async currentState(): Promise<MinimaxAccountState> {
+    // An attempt in flight owns the state. Reading storage here would report
+    // signed out while the operator is standing on the verification page, which
+    // is the one moment the surface most needs to see `authorizing`.
+    if (this.state.status === 'authorizing') return this.state
+    const stored = await readGrant(this.ctx, this.options.credentialsPath)
+    this.state = stored !== undefined && stored.region === this.options.region
+      ? { status: 'authenticated', accountId: stored.accountId, expiresAtMs: stored.expiresAtMs }
+      : { status: 'signed-out' }
     return this.state
   }
 
@@ -190,7 +255,7 @@ export class MinimaxAccount extends Service {
       this.ctx.emit('minimax-account/signed-out')
       return undefined
     }
-    return (await this.refreshStored(stored, stored.refreshToken)).accessToken
+    return (await this.refreshStored(stored.refreshToken)).accessToken
   }
 
   /**
@@ -286,31 +351,26 @@ export class MinimaxAccount extends Service {
   }
 
   /**
-   * Refresh one stored grant, collapsing concurrent callers onto one request.
+   * Refresh the stored grant, collapsing concurrent callers onto one request.
    *
-   * @param stored - the record being refreshed, for the fields carried forward.
-   * @param refreshToken - the non-undefined refresh token; `resolveToken` has
-   *   already handled the no-refresh-token case, and taking it as a parameter
-   *   keeps that guarantee visible here rather than re-asserted.
+   * The new record is rebuilt from the refresh response rather than patched onto
+   * the old one, so a server that rotates the refresh token — and one that does
+   * not — both leave a record the next reader can validate.
+   *
+   * @param refreshToken - the stored refresh token. `resolveToken` has already
+   *   handled the case where there is none, so taking it as a parameter keeps
+   *   that guarantee visible here rather than re-asserted.
    */
-  private async refreshStored(stored: StoredCredential, refreshToken: string): Promise<StoredCredential> {
+  private async refreshStored(refreshToken: string): Promise<StoredCredential> {
     this.refreshInFlight ??= (async () => {
       try {
         const grant = await refreshAccessToken(this.options.endpoints, refreshToken, this.options.client)
+        // The record kept in memory and the record written to disk are built by
+        // one function, so the two cannot describe different grants. It used to
+        // be assembled twice — once here and once inside `writeGrant` — and only
+        // agreed because `stored.clientId` happened to equal the constant.
+        const next = toStoredCredential(grant, this.options.region)
         await writeGrant(this.ctx, this.options.credentialsPath, grant, this.options.region)
-        // Absent keys stay absent — see `StoredCredential`; naming them with a
-        // possibly-undefined value would make this record unrepresentable.
-        const next: StoredCredential = {
-          schemaVersion: 1,
-          clientId: stored.clientId,
-          accessToken: grant.accessToken,
-          expiresAtMs: grant.expiresAtMs,
-          scopes: grant.scopes,
-          region: this.options.region,
-          ...(grant.refreshToken === undefined ? {} : { refreshToken: grant.refreshToken }),
-          ...(grant.accountId === undefined ? {} : { accountId: grant.accountId }),
-          ...(grant.subject === undefined ? {} : { subject: grant.subject }),
-        }
         this.state = { status: 'authenticated', accountId: next.accountId, expiresAtMs: next.expiresAtMs }
         return next
       }
@@ -369,32 +429,3 @@ export class MinimaxAccount extends Service {
     return [this.options.endpoints.inferenceOrigin, this.options.endpoints.quotaOrigin]
   }
 }
-
-/** Open a URL with the platform's default handler; failures are non-fatal. */
-export function openExternal(url: string): void {
-  let command: string
-  let args: string[]
-  if (process.platform === 'win32') {
-    // The empty-string title keeps `start` from reading the URL as a window
-    // title; `windowsHide` and a detached child keep a console from flashing.
-    command = 'cmd'
-    args = ['/c', 'start', '', url]
-  }
-  else if (process.platform === 'darwin') {
-    command = 'open'
-    args = [url]
-  }
-  else {
-    command = 'xdg-open'
-    args = [url]
-  }
-  try {
-    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
-    child.unref()
-  }
-  catch {
-    // A headless host has no browser; the logged URL and code are enough.
-  }
-}
-
-export default MinimaxAccount

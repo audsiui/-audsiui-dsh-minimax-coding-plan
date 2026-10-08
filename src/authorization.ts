@@ -16,11 +16,12 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-authorization'
-import { openExternal } from './account.ts'
+import { openExternal } from './openExternal.ts'
 import type { Config } from './config.ts'
 import { endpointsFor } from './config.ts'
-import { GRANT_KEY, grantPayload } from './grant.ts'
+import { GRANT_KEY } from './grant.ts'
 import { pollDeviceToken, requestDeviceAuthorization } from './oauth.ts'
+import { toStoredCredential } from './store.ts'
 
 /** Method id for the device-authorization grant; the only method this flow offers. */
 const METHOD = 'device-code'
@@ -52,7 +53,7 @@ export function registerMinimaxAuthorization(ctx: Context, config: Config): void
       // the attempt stops the wait instead of holding the key until the grant
       // expires.
       const grant = await pollDeviceToken(endpoints, authorization, {}, session.signal)
-      await session.commit({ kind: 'grant', payload: grantPayload(grant, config.region) })
+      await session.commit({ kind: 'grant', payload: toStoredCredential(grant, config.region) })
     },
   })
 }

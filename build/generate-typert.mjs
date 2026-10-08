@@ -1,4 +1,4 @@
-﻿// Generate this package's Typert Host and Host-for-Client artifacts.
+// Generate this package's Typert Host and Host-for-Client artifacts.
 //
 // dsh runs its own Typert generator inside its monorepo root build, where the
 // match set is its own package layout. A package installed from git is not in
@@ -212,10 +212,13 @@ try {
     writeFile(resolve(root, 'src/generated/typert.remote-client.d.ts.map'), artifact.remote.dtsMap),
   ])
 
-  const endpoints = [...artifact.remote.js.matchAll(/["'`]([a-z]+)\/([a-z]+)["'`]/gu)]
-    .map(match => `${match[1]}/${match[2]}`)
+  // Invocations are addressed `<package>#<namespace>/<method>`, so the quote sits
+  // before the package name and the hash before the namespace. Matching on the
+  // bare `<word>/<word>` shape found nothing and printed `(none)`.
+  const endpoints = [...artifact.remote.js.matchAll(/#[a-zA-Z]+\/[a-zA-Z]+/gu)]
+    .map(match => match[0].slice(1))
   console.log(`generated for ${PACKAGE_ID}: ${artifact.js.split('\n').length} host lines, `
-    + `${artifact.remote.js.split('\n').length} client lines, endpoints: ${[...new Set(endpoints)].join(', ') || '(none)'}`)
+    + `${artifact.remote.js.split('\n').length} client lines, endpoints: ${[...new Set(endpoints)].sort().join(', ') || '(none)'}`)
 }
 finally {
   await rm(temporary, { recursive: true, force: true })

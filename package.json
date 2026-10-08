@@ -28,6 +28,10 @@
       "types": "./lib/client-types/client/index.d.ts",
       "default": "./lib/client.js"
     },
+    "./testing": {
+      "types": "./lib/types/testing.d.ts",
+      "default": "./lib/types/testing.js"
+    },
     "./package.json": "./package.json"
   },
   "//files": "docs/cookbook/adding-a-package.zh.md:27 — the list names exactly the runtime artifacts and their declarations, and forbids publishing src, declaration maps, and JS maps. Every entry here is either an `exports` target or the patch file the manifest points at. lib/ is committed so a git install builds nothing; the sources and build scripts stay in the repository, not the tarball.",
@@ -41,16 +45,18 @@
     "lib/typert.remote-client.js",
     "lib/typert.remote-client.d.ts",
     "lib/client.js",
+    "lib/types/testing.d.ts",
+    "lib/types/testing.js",
     "cordis.patch.yml",
     "README.md"
   ],
   "scripts": {
-    "//scripts": "prepare is the git-install build. docs/user/develop/basic/publish.zh.md:167-170: a git install pulls sources, not artifacts, and nothing runs your build script unless you provide prepare — so a TypeScript package arrives with no lib/ and fails to load. The operator also has to authorize it (allowBuilds) before pnpm will run it; that is the documented cost of this distribution shape, not something the package can opt out of. It is self-contained: tsdown, typescript and lightningcss are ordinary devDependencies, and build:lib's two tsc passes resolve against this package's own tsconfigs rather than a monorepo checkout. lib/ stays committed as well, so an install has nothing to rebuild if the store already has the artifacts. build:lib runs the two tsc passes that generate-typecheck and emit; tsdown bundles from their output rather than from source, because the Typert artifacts are generated TypeScript and the browser half compiles against a different set of peer declarations.\n\n//scripts:prepublishOnly is deliberately NOT prepack. pnpm builds a git-hosted package by injecting `npm install` and then looping over [prepublish, prepack, publish] (PREPUBLISH_SCRIPTS, pnpm.mjs:139471-139475), so a prepack that also builds makes every git install compile the whole package twice — 20 wasted seconds per install, visible in the log. prepublishOnly fires for `npm publish` and nothing pnpm runs here, so publishing still gets a fresh build and installing does not.",
-    "prepare": "npm run build",
-    "prepublishOnly": "npm run build",
+    "//scripts": "There is deliberately no `prepare`, and that is the whole reason a git install costs nothing here. pnpm decides a git-hosted package must be prepared the moment `prepare` exists — never by looking at whether build output is already present — and preparing means a clone, an inner `npm install` of every devDependency, and the build itself. pnpm 10.26 turned that into a hard stop: ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED until the operator adds a SHA-pinned `allowBuilds` key that has to be rewritten on every commit. Measured on this package with pnpm 11.7.0, that path took 1m32s and installed 95 packages to produce a handful of JavaScript files. A matrix over the lifecycle hooks confirms `prepare` is the only one that triggers it: `prepack`, `prepublishOnly`, `prepublish` and no scripts at all install clean, as do the absolute-path and tarball forms. So `lib/` is committed and the git, absolute-path and tarball installs all resolve straight to it, running no script.\n\n//scripts:prepack is the one build hook that stays, because it is the only one pnpm never runs for an installed package: it fires for `npm pack` and `npm publish`, so a shipped tarball always carries a freshly built lib/, while every install form leaves it alone. `prepublishOnly` is redundant next to it — publishing already runs prepack.\n\n//scripts:verify:artifacts is the guard that replaces the gate pnpm used to provide. With the install no longer rebuilding, a commit that edits src/ without rebuilding would silently ship a stale lib/ to every git installer, so this snapshots lib/, rebuilds, reports every file that differs, and restores the committed tree either way.",
+    "prepack": "npm run build",
     "generate:typert": "node build/generate-typert.mjs",
     "build:lib": "tsc -p tsconfig.host.json && tsc -p tsconfig.client.json && node build/copy-assets.mjs",
     "build": "node build/clean.mjs && npm run build:lib && tsdown",
+    "verify:artifacts": "node build/verify-artifacts.mjs",
     "typecheck": "tsc -p tsconfig.host.json --noEmit && tsc -p tsconfig.client.json --noEmit",
     "smoke": "tsx smoke.ts",
     "signin": "node signin.mjs",

@@ -40,7 +40,92 @@ export interface StoredCredential {
   readonly region: string
 }
 
-/** Load a stored credential, treating any unreadable file as signed out. */
+/**
+ * Validate any JSON value into a stored credential.
+ *
+ * This is the single answer to "what is a valid `StoredCredential`", and both
+ * places a record can arrive — the credential seam's opaque payload and the
+ * legacy file — go through it. They used to carry their own checks, and the two
+ * copies had already drifted: the seam's reader refused a record with an empty
+ * `region` while the file's reader accepted it and substituted `''`. The field
+ * is required and non-empty here, which is what a grant actually needs: a
+ * record that names no region cannot be matched against this installation's
+ * configured one, so it is not a credential, it is debris.
+ *
+ * Every rejection reads as signed out rather than as a half-working grant. The
+ * scope check matters most: a token without `agent.default` cannot call anything.
+ *
+ * @param raw - a parsed JSON value of unknown shape.
+ * @returns the validated record, or undefined when it is not one.
+ */
+export function parseStoredCredential(raw: unknown): StoredCredential | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined
+  const record = raw as Partial<StoredCredential>
+  if (record.schemaVersion !== 1) return undefined
+  if (record.clientId !== OAUTH_CLIENT_ID) return undefined
+  if (typeof record.accessToken !== 'string' || !record.accessToken) return undefined
+  if (typeof record.expiresAtMs !== 'number' || !Number.isFinite(record.expiresAtMs)) return undefined
+  if (!Array.isArray(record.scopes) || !record.scopes.every(scope => typeof scope === 'string')) return undefined
+  if (!record.scopes.includes(OAUTH_SCOPE)) return undefined
+  if (typeof record.region !== 'string' || !record.region) return undefined
+  return {
+    schemaVersion: 1,
+    clientId: OAUTH_CLIENT_ID,
+    accessToken: record.accessToken,
+    expiresAtMs: record.expiresAtMs,
+    scopes: record.scopes,
+    region: record.region,
+    // Conditional spreads, not `key: value ?? undefined`. With
+    // `exactOptionalPropertyTypes` the latter is a type error *and* would put the
+    // key back on the object, which is the exact shape the credential store
+    // rejects. A key that is not there is how absence is spelled here.
+    ...(typeof record.refreshToken === 'string' && record.refreshToken ? { refreshToken: record.refreshToken } : {}),
+    ...(typeof record.accountId === 'string' ? { accountId: record.accountId } : {}),
+    ...(typeof record.subject === 'string' ? { subject: record.subject } : {}),
+  }
+}
+
+/**
+ * Build the record a grant is stored as, with every absent key omitted.
+ *
+ * The omission is the load-bearing part. The credential store validates a
+ * payload as *representable in JSON* before it writes one, and a property
+ * explicitly set to `undefined` fails that check even though `JSON.stringify`
+ * would have dropped it silently — `Object.values` walks present keys regardless
+ * of what they hold (`@deepseek-ai/dsh-credentials-local/lib/index.js:302-307`).
+ * Writing `accountId: undefined` therefore wedged the whole store: the record
+ * landed, and the next Host start refused to load with `record "…/default"
+ * payload holds a value JSON cannot represent` — a crash the plugin could not
+ * recover from, because it happens before any of this code runs.
+ *
+ * Omission is the encoding "absent" already uses everywhere else here, and
+ * {@link parseStoredCredential} reads a missing key as absent, so nothing
+ * downstream has to know the difference.
+ *
+ * @param grant - the token set to persist.
+ * @param region - region whose account origin issued it.
+ * @returns the record, ready to be written through either store.
+ */
+export function toStoredCredential(grant: TokenGrant, region: string): StoredCredential {
+  return {
+    schemaVersion: 1,
+    clientId: OAUTH_CLIENT_ID,
+    accessToken: grant.accessToken,
+    expiresAtMs: grant.expiresAtMs,
+    scopes: grant.scopes,
+    region,
+    ...(grant.refreshToken === undefined ? {} : { refreshToken: grant.refreshToken }),
+    ...(grant.accountId === undefined ? {} : { accountId: grant.accountId }),
+    ...(grant.subject === undefined ? {} : { subject: grant.subject }),
+  }
+}
+
+/**
+ * Load a stored credential, treating any unreadable file as signed out.
+ *
+ * @param path - absolute path of the legacy JSON record.
+ * @returns the validated record, or undefined.
+ */
 export async function readCredential(path: string): Promise<StoredCredential | undefined> {
   let raw: string
   try {
@@ -58,49 +143,18 @@ export async function readCredential(path: string): Promise<StoredCredential | u
     // A truncated file must not wedge sign-in; treat it as absent.
     return undefined
   }
-  if (typeof parsed !== 'object' || parsed === null) return undefined
-  const record = parsed as Partial<StoredCredential>
-  if (record.schemaVersion !== 1) return undefined
-  if (record.clientId !== OAUTH_CLIENT_ID) return undefined
-  if (typeof record.accessToken !== 'string' || !record.accessToken) return undefined
-  if (typeof record.expiresAtMs !== 'number' || !Number.isFinite(record.expiresAtMs)) return undefined
-  if (!Array.isArray(record.scopes) || !record.scopes.every(scope => typeof scope === 'string')) return undefined
-  if (!record.scopes.includes(OAUTH_SCOPE)) return undefined
-  return {
-    schemaVersion: 1,
-    clientId: OAUTH_CLIENT_ID,
-    accessToken: record.accessToken,
-    expiresAtMs: record.expiresAtMs,
-    scopes: record.scopes,
-    region: typeof record.region === 'string' ? record.region : '',
-    // Spread so an absent key stays absent; naming it with a possibly-undefined
-    // value would put the key back and hand the store a payload it rejects.
-    ...(typeof record.refreshToken === 'string' && record.refreshToken ? { refreshToken: record.refreshToken } : {}),
-    ...(typeof record.accountId === 'string' ? { accountId: record.accountId } : {}),
-    ...(typeof record.subject === 'string' ? { subject: record.subject } : {}),
-  }
+  return parseStoredCredential(parsed)
 }
 
-/** Persist a grant, replacing any previous record atomically. */
+/**
+ * Persist a grant, replacing any previous record atomically.
+ *
+ * @param path - absolute path of the legacy JSON record.
+ * @param grant - the token set to persist.
+ * @param region - region whose account origin issued it.
+ */
 export async function writeCredential(path: string, grant: TokenGrant, region: string): Promise<void> {
-  // Keys whose value is `undefined` are dropped rather than written: a
-  // property set to `undefined` is not a value JSON can represent, and the
-  // credential store that reads this file back rejects such a record outright.
-  // `readCredential` treats a missing key as absent, so nothing changes here.
-  const record: Record<string, unknown> = {
-    schemaVersion: 1,
-    clientId: OAUTH_CLIENT_ID,
-    accessToken: grant.accessToken,
-    refreshToken: grant.refreshToken,
-    expiresAtMs: grant.expiresAtMs,
-    scopes: grant.scopes,
-    accountId: grant.accountId,
-    subject: grant.subject,
-    region,
-  }
-  for (const key of Object.keys(record)) {
-    if (record[key] === undefined) delete record[key]
-  }
+  const record = toStoredCredential(grant, region)
   // 0700, not the default: this file is the only copy of a bearer and a refresh
   // token, and a directory another local user can list is a directory they can
   // race. `docs/defensive-patterns.zh.md:31`.

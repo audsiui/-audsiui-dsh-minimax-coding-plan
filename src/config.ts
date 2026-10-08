@@ -26,8 +26,30 @@ export interface MinimaxCatalogModel {
   maxTokens?: number
   /** Accepted request modalities; omission is text-only. */
   inputModalities?: ('text' | 'image')[]
+  /**
+   * Pixel budget every request image of this route is projected into, or `low`
+   * for the transport's smallest grid. Omission projects through the
+   * transport's own published grid, which belongs to DeepSeek rather than to
+   * this route; declaring it here is what makes the rule the route's own.
+   */
+  imagePixelBudget?: number | 'low'
+  /** Encoded-byte ceiling for one request image. Omission is 2 MiB. */
+  imageMaxBytes?: number
+  /** `in-history`, when this route's system prompts are replayed in the history. */
+  systemPromptUpdate?: 'in-history'
+  /** How this route carries tool definitions across a replay. */
+  toolUpdate?: 'in-history' | 'addition-only'
 }
 
+/**
+ * Catalog entry schema, matching the Messages protocol's own catalog rules.
+ *
+ * The four fields beyond image support are carried because the transport reads
+ * them: a catalog entry that cannot express them cannot be configured with
+ * them, and an absent rule silently falls back to a default chosen for a
+ * different provider. Mirroring the protocol's schema is the whole fix — there
+ * is no MiniMax-specific variant of any of them.
+ */
 const catalogModel = z.object({
   id: z.string().required(),
   name: z.string(),
@@ -35,6 +57,10 @@ const catalogModel = z.object({
   contextWindow: z.number().step(1).min(1),
   maxTokens: z.number().step(1).min(1),
   inputModalities: z.array(z.union(['text', 'image'] as const)).min(1).default(['text']),
+  imagePixelBudget: z.union([z.number().step(1).min(1), z.const('low')]),
+  imageMaxBytes: z.number().step(1).min(1),
+  systemPromptUpdate: z.const('in-history'),
+  toolUpdate: z.union(['in-history', 'addition-only'] as const),
 })
 
 /**

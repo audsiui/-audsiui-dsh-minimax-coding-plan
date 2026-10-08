@@ -7,16 +7,22 @@
  * working credential. The private JSON file remains the fallback so a grant
  * written by `signin.mjs` keeps working across this change.
  *
- * The seam never interprets the payload — `GrantRecord.payload` is opaque JSON
- * whose only requirement is that it survives a round trip — so the shape below
- * is this plugin's own and is validated on the way out exactly as the file
- * store validates its own.
+ * This module is only the *routing*: which of the two locations answers a read,
+ * a write, or a clear. What a valid record is — and how one is built — belongs to
+ * `store.ts`, which both locations share, so the seam and the file cannot drift
+ * into accepting different shapes.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialKey, type CredentialKey } from '@deepseek-ai/dsh-credentials'
-import { OAUTH_CLIENT_ID, OAUTH_SCOPE } from './constants.ts'
+import {
+  clearCredential,
+  parseStoredCredential,
+  readCredential,
+  toStoredCredential,
+  writeCredential,
+  type StoredCredential,
+} from './store.ts'
 import type { TokenGrant } from './oauth.ts'
-import { clearCredential, readCredential, writeCredential, type StoredCredential } from './store.ts'
 
 /** Scope segment of the credential key; the harness requires the plugin's own cordis name. */
 const SCOPE = 'llm-minimax-coding-plan'
@@ -25,71 +31,6 @@ const ID = 'default'
 
 /** The record this plugin owns. */
 export const GRANT_KEY: CredentialKey = credentialKey(SCOPE, ID)
-
-/**
- * Validate an opaque payload back into a usable grant.
- *
- * Mirrors the file store's checks, so a record this plugin cannot interpret
- * reads as signed out rather than as a half-working credential. The scope
- * check matters most: a token without `agent.default` cannot call anything.
- */
-export function parseGrantPayload(payload: unknown): StoredCredential | undefined {
-  if (typeof payload !== 'object' || payload === null) return undefined
-  const record = payload as Partial<StoredCredential>
-  if (record.schemaVersion !== 1) return undefined
-  if (record.clientId !== OAUTH_CLIENT_ID) return undefined
-  if (typeof record.accessToken !== 'string' || !record.accessToken) return undefined
-  if (typeof record.expiresAtMs !== 'number' || !Number.isFinite(record.expiresAtMs)) return undefined
-  if (!Array.isArray(record.scopes) || !record.scopes.every(scope => typeof scope === 'string')) return undefined
-  if (!record.scopes.includes(OAUTH_SCOPE)) return undefined
-  if (typeof record.region !== 'string' || !record.region) return undefined
-  return {
-    schemaVersion: 1,
-    clientId: OAUTH_CLIENT_ID,
-    accessToken: record.accessToken,
-    expiresAtMs: record.expiresAtMs,
-    scopes: record.scopes,
-    region: record.region,
-    // Conditional spreads, not `key: value ?? undefined`. With
-    // `exactOptionalPropertyTypes` the latter is a type error *and* would put
-    // the key back on the object, which is the exact shape the credential store
-    // rejects. A key that is not there is how absence is spelled here.
-    ...(typeof record.refreshToken === 'string' && record.refreshToken ? { refreshToken: record.refreshToken } : {}),
-    ...(typeof record.accountId === 'string' ? { accountId: record.accountId } : {}),
-    ...(typeof record.subject === 'string' ? { subject: record.subject } : {}),
-  }
-}
-
-/**
- * Build the payload a grant is stored as, with every absent key omitted.
- *
- * The credential store validates a payload as *representable in JSON* before it
- * writes one, and a property explicitly set to `undefined` fails that check even
- * though `JSON.stringify` would have dropped it silently — `Object.values` walks
- * present keys regardless of what they hold
- * (`@deepseek-ai/dsh-credentials-local/lib/index.js:302-307`). Writing
- * `accountId: undefined` therefore wedged the whole store: the record landed,
- * and the next Host start refused to load with `record "…/default" payload
- * holds a value JSON cannot represent` — a crash the plugin could not recover
- * from, because it happens before any of this code runs.
- *
- * Omission is the encoding "absent" already uses everywhere else here, and
- * `parseGrantPayload` reads a missing key as absent, so nothing downstream has
- * to know the difference.
- */
-export function grantPayload(grant: TokenGrant, region: string): StoredCredential {
-  return {
-    schemaVersion: 1,
-    clientId: OAUTH_CLIENT_ID,
-    accessToken: grant.accessToken,
-    expiresAtMs: grant.expiresAtMs,
-    scopes: grant.scopes,
-    region,
-    ...(grant.refreshToken === undefined ? {} : { refreshToken: grant.refreshToken }),
-    ...(grant.accountId === undefined ? {} : { accountId: grant.accountId }),
-    ...(grant.subject === undefined ? {} : { subject: grant.subject }),
-  }
-}
 
 /**
  * Read the stored grant, preferring the credential seam.
@@ -107,7 +48,7 @@ export async function readGrant(ctx: Context, filePath: string): Promise<StoredC
   if (store !== undefined) {
     const record = await store.readRecord(GRANT_KEY)
     if (record?.kind === 'grant') {
-      const parsed = parseGrantPayload(record.payload)
+      const parsed = parseStoredCredential(record.payload)
       if (parsed !== undefined) return parsed
     }
   }
@@ -133,7 +74,7 @@ export async function writeGrant(
     await writeCredential(filePath, grant, region)
     return
   }
-  await store.modifyRecord(GRANT_KEY, () => Promise.resolve({ kind: 'grant', payload: grantPayload(grant, region) }))
+  await store.modifyRecord(GRANT_KEY, () => Promise.resolve({ kind: 'grant', payload: toStoredCredential(grant, region) }))
 }
 
 /**

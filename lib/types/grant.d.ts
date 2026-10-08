@@ -7,43 +7,17 @@
  * working credential. The private JSON file remains the fallback so a grant
  * written by `signin.mjs` keeps working across this change.
  *
- * The seam never interprets the payload — `GrantRecord.payload` is opaque JSON
- * whose only requirement is that it survives a round trip — so the shape below
- * is this plugin's own and is validated on the way out exactly as the file
- * store validates its own.
+ * This module is only the *routing*: which of the two locations answers a read,
+ * a write, or a clear. What a valid record is — and how one is built — belongs to
+ * `store.ts`, which both locations share, so the seam and the file cannot drift
+ * into accepting different shapes.
  */
 import type { Context } from '@deepseek-ai/cordis';
 import { type CredentialKey } from '@deepseek-ai/dsh-credentials';
-import type { TokenGrant } from './oauth.ts';
 import { type StoredCredential } from './store.ts';
+import type { TokenGrant } from './oauth.ts';
 /** The record this plugin owns. */
 export declare const GRANT_KEY: CredentialKey;
-/**
- * Validate an opaque payload back into a usable grant.
- *
- * Mirrors the file store's checks, so a record this plugin cannot interpret
- * reads as signed out rather than as a half-working credential. The scope
- * check matters most: a token without `agent.default` cannot call anything.
- */
-export declare function parseGrantPayload(payload: unknown): StoredCredential | undefined;
-/**
- * Build the payload a grant is stored as, with every absent key omitted.
- *
- * The credential store validates a payload as *representable in JSON* before it
- * writes one, and a property explicitly set to `undefined` fails that check even
- * though `JSON.stringify` would have dropped it silently — `Object.values` walks
- * present keys regardless of what they hold
- * (`@deepseek-ai/dsh-credentials-local/lib/index.js:302-307`). Writing
- * `accountId: undefined` therefore wedged the whole store: the record landed,
- * and the next Host start refused to load with `record "…/default" payload
- * holds a value JSON cannot represent` — a crash the plugin could not recover
- * from, because it happens before any of this code runs.
- *
- * Omission is the encoding "absent" already uses everywhere else here, and
- * `parseGrantPayload` reads a missing key as absent, so nothing downstream has
- * to know the difference.
- */
-export declare function grantPayload(grant: TokenGrant, region: string): StoredCredential;
 /**
  * Read the stored grant, preferring the credential seam.
  *

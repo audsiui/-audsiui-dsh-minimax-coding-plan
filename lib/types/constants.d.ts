@@ -66,12 +66,25 @@ export type Region = keyof typeof REGION_ENDPOINTS;
  * cannot be enumerated and must be declared. This default carries only the
  * wire id verified end-to-end against the device-grant token; replace it with
  * the ids your Coding Plan actually serves.
+ *
+ * `inputModalities` is declared rather than left to the `text` default because
+ * the endpoint is the Anthropic Messages protocol and this model takes images.
+ * That declaration is the whole switch: the shared transport refuses an image
+ * for a route whose catalog does not list `image`
+ * (`llm-deepseek: Messages image input requires a vision model and attachment
+ * service`), so a text-only catalog silently projects every image into text.
+ *
+ * No image limits are declared. `imagePixelBudget` and `imageMaxBytes` are left
+ * to the transport's own defaults — its published token grid as the projection
+ * and 2 MiB as the encoded-byte ceiling — because nothing about MiniMax's side
+ * of either has been measured. Declare them once it has.
  */
-export declare const DEFAULT_MODELS: readonly [{
-    readonly id: "MiniMax-M3.1-Flash-Preview";
-    readonly name: "MiniMax M3.1 Flash (Preview)";
-    readonly description: "Coding Plan model served by the MiniMax agent backend.";
-}];
+export declare const DEFAULT_MODELS: {
+    id: string;
+    name: string;
+    description: string;
+    inputModalities: ("text" | "image")[];
+}[];
 /**
  * Refresh this many milliseconds before the access token actually expires, so
  * a request never leaves the host mid-flight with a token about to lapse.

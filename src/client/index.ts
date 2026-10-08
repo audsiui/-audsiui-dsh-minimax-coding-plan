@@ -73,6 +73,20 @@ export interface MinimaxSurfaceApi {
 }
 
 /**
+ * Unwrap one Remote outcome.
+ *
+ * Every generated method answers `{ ok: true, value }` or `{ ok: false, error }`,
+ * so without this the failure branch is restated at each call site — five times
+ * here, and once more per method for any surface added later. Written once, it
+ * also gives the surface a single place where "a Host failure becomes a thrown
+ * value" happens, which is what `useMinimaxSurface` splits on.
+ */
+function unwrap<T>(result: { readonly ok: true, readonly value: T } | { readonly ok: false, readonly error: unknown }): T {
+  if (!result.ok) throw result.error
+  return result.value
+}
+
+/**
  * Mount the package Remote, then contribute the surface.
  *
  * The Remote is mounted rather than assumed present: a profile whose Host half
@@ -94,33 +108,15 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
   const t = ctx.locale.bind(NS)
 
   const api: MinimaxSurfaceApi = {
-    loadState: async () => {
-      const result = await remote.state()
-      if (!result.ok) throw result.error
-      return result.value
-    },
-    loadPlan: async () => {
-      const result = await remote.plan()
-      if (!result.ok) throw result.error
-      return result.value
-    },
-    loadQuota: async () => {
-      const result = await remote.quota()
-      if (!result.ok) throw result.error
-      return result.value
-    },
+    loadState: async () => unwrap(await remote.state()),
+    loadPlan: async () => unwrap(await remote.plan()),
+    loadQuota: async () => unwrap(await remote.quota()),
     // Device authorization is a conversation, not a request: the call returns
     // once the attempt is under way and the operator approves it in a browser.
     // The surface therefore re-reads `state` on a short interval while the
     // status says it is authorizing, and stops as soon as it does not.
-    startSignIn: async () => {
-      const result = await remote.signIn()
-      if (!result.ok) throw result.error
-    },
-    signOut: async () => {
-      const result = await remote.signOut()
-      if (!result.ok) throw result.error
-    },
+    startSignIn: async () => { unwrap(await remote.signIn()) },
+    signOut: async () => { unwrap(await remote.signOut()) },
   }
 
   // One section, and it is the whole page. `settings.section` is the only

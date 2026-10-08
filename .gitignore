@@ -1,10 +1,10 @@
-# Dependencies are never committed. `lib/` *is* committed, on purpose: see the
-# `//scripts` note in package.json. pnpm decides a git-hosted package needs a
-# build whenever a `prepare` script exists, then only runs prepublish/prepack/
-# publish, so a source-only package either demands an SHA-pinned `allowBuilds`
-# entry or installs with lib/ missing. Committing the artifact is what lets
-# `dsh plugin add github:...` work with no manual step. Run `npm run build` and
-# commit lib/ alongside any src/ change.
+# Dependencies are never committed. `lib/` *is* committed, and that is the reason
+# `dsh plugin add github:audsiui/-audsiui-dsh-minimax-coding-plan` installs plain
+# JavaScript with no build step: there is no `prepare`, so pnpm treats the
+# repository as already prepared and links the committed output directly. Edit
+# anything under src/, run `npm run build`, and commit `lib/` in the same commit;
+# `npm run verify:artifacts` fails when the two have drifted apart. See the
+# `//scripts` note in package.json.
 node_modules/
 *.tsbuildinfo
 

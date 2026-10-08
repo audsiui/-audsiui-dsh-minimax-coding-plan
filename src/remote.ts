@@ -16,7 +16,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { MinimaxAccount, type MinimaxAccountState } from './account.ts'
+import type { MinimaxAccountReader, MinimaxAccountState } from './account.ts'
 import type { RegionEndpoints } from './constants.ts'
 import { failedPlan, fetchPlan } from './plan.ts'
 import { fetchQuota, QuotaAuthError } from './quota.ts'
@@ -42,7 +42,7 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 /** Collaborators and settings the Remote surface needs. */
 export interface MinimaxRemoteOptions {
   /** The credential the surface's buttons act on. */
-  readonly account: MinimaxAccount
+  readonly account: MinimaxAccountReader
   /** Region origins; `quotaOrigin` and `agentOrigin` are read. */
   readonly endpoints: RegionEndpoints
   /** Region name, reported back so a surface can show it. */
@@ -138,8 +138,12 @@ export class MinimaxRemoteService extends TypertRemoteService {
   private async resolveGrant(): Promise<
     { readonly token: string } | { readonly authExpired: boolean, readonly error: string }
   > {
-    const state = this.options.account.getState()
-    if (state.status !== 'authenticated') {
+    // Storage first. The account caches its state in memory and only reads the
+    // persisted grant when a token is actually needed, so without this a Host
+    // started with a valid credential on disk answers every read "not signed in"
+    // until the operator sends a message.
+    await this.options.account.currentState()
+    if (this.options.account.getState().status !== 'authenticated') {
       return { authExpired: false, error: 'not signed in' }
     }
     // Resolving the grant can reject on its own — a refresh that gets a 5xx or
@@ -162,11 +166,14 @@ export class MinimaxRemoteService extends TypertRemoteService {
 
   /**
    * Current account state. The surface's poll target.
+   *
+   * Reads the persisted grant rather than the cached value, so a Host that has
+   * just restarted reports the account it actually has instead of an empty one.
    * @returns the display projection; never carries a token.
    */
   @Remote('state')
-  state(): RemoteAccountView {
-    return toAccountView(this.options.account.getState(), this.options.region)
+  async state(): Promise<RemoteAccountView> {
+    return toAccountView(await this.options.account.currentState(), this.options.region)
   }
 
   /**

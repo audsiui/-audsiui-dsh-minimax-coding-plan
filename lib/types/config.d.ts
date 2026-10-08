@@ -18,6 +18,19 @@ export interface MinimaxCatalogModel {
     maxTokens?: number;
     /** Accepted request modalities; omission is text-only. */
     inputModalities?: ('text' | 'image')[];
+    /**
+     * Pixel budget every request image of this route is projected into, or `low`
+     * for the transport's smallest grid. Omission projects through the
+     * transport's own published grid, which belongs to DeepSeek rather than to
+     * this route; declaring it here is what makes the rule the route's own.
+     */
+    imagePixelBudget?: number | 'low';
+    /** Encoded-byte ceiling for one request image. Omission is 2 MiB. */
+    imageMaxBytes?: number;
+    /** `in-history`, when this route's system prompts are replayed in the history. */
+    systemPromptUpdate?: 'in-history';
+    /** How this route carries tool definitions across a replay. */
+    toolUpdate?: 'in-history' | 'addition-only';
 }
 /**
  * MiniMax Coding Plan configuration.
@@ -52,6 +65,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         contextWindow?: number | null;
         maxTokens?: number | null;
         inputModalities?: ("text" | "image")[] | null;
+        imagePixelBudget?: number | "low" | null;
+        imageMaxBytes?: number | null;
+        systemPromptUpdate?: "in-history" | null;
+        toolUpdate?: "in-history" | "addition-only" | null;
     } & import("@deepseek-ai/cosmokit").Dict)[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
         id: z<string, string, "defined">;
         name: z<string, string, "plain">;
@@ -59,6 +76,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         contextWindow: z<number, number, "plain">;
         maxTokens: z<number, number, "plain">;
         inputModalities: z<("text" | "image")[], ("text" | "image")[], "defined">;
+        imagePixelBudget: z<number | "low", number | "low", "plain">;
+        imageMaxBytes: z<number, number, "plain">;
+        systemPromptUpdate: z<"in-history", "in-history", "plain">;
+        toolUpdate: z<"in-history" | "addition-only", "in-history" | "addition-only", "plain">;
     }>>[]>, "volatile-defined">;
     region: z<"cn" | "en", "cn" | "en", "defined">;
     credentialsPath: z<string, string, "defined">;
@@ -88,6 +109,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         contextWindow?: number | null;
         maxTokens?: number | null;
         inputModalities?: ("text" | "image")[] | null;
+        imagePixelBudget?: number | "low" | null;
+        imageMaxBytes?: number | null;
+        systemPromptUpdate?: "in-history" | null;
+        toolUpdate?: "in-history" | "addition-only" | null;
     } & import("@deepseek-ai/cosmokit").Dict)[]>, NoInfer<Schemastery.ObjectT<NoInfer<{
         id: z<string, string, "defined">;
         name: z<string, string, "plain">;
@@ -95,6 +120,10 @@ export declare const Config: z<Schemastery.ObjectS<NoInfer<{
         contextWindow: z<number, number, "plain">;
         maxTokens: z<number, number, "plain">;
         inputModalities: z<("text" | "image")[], ("text" | "image")[], "defined">;
+        imagePixelBudget: z<number | "low", number | "low", "plain">;
+        imageMaxBytes: z<number, number, "plain">;
+        systemPromptUpdate: z<"in-history", "in-history", "plain">;
+        toolUpdate: z<"in-history" | "addition-only", "in-history" | "addition-only", "plain">;
     }>>[]>, "volatile-defined">;
     region: z<"cn" | "en", "cn" | "en", "defined">;
     credentialsPath: z<string, string, "defined">;

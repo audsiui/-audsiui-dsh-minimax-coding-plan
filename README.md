@@ -68,7 +68,28 @@ local credential but does not invalidate the refresh token server-side.**
     models:                      # required: there is no discovery route
       - id: MiniMax-M3.1-Flash-Preview
         name: MiniMax M3.1 Flash (Preview)
+        inputModalities: [text, image]
+        # imagePixelBudget: low    # optional; omitted means the transport's own grid
+        # imageMaxBytes: 2097152   # optional; omitted means the transport's own 2 MiB
 ```
+
+### Image input
+
+The route is the Anthropic Messages protocol and this model takes images, so the
+shipped catalog says so. That one declaration is the entire switch: the shared
+transport refuses an image for a route whose catalog does not list `image`, so a
+text-only catalog quietly projects every picture into text instead of failing.
+
+No MiniMax-specific image limits are declared, because none have been measured.
+`imagePixelBudget` and `imageMaxBytes` stay on the transport's own defaults — its
+published token grid as the projection, and 2 MiB as the encoded-byte ceiling.
+Both are settable per entry once the real limits are known, and the protocol's
+own rule still applies: an entry that lists only `text` cannot declare either.
+
+Two transport behaviours worth knowing on this route. Images are sent inline as
+base64, but the Files API is attempted first and falls back on failure — MiniMax
+has no `/files`, so an image costs one wasted round trip before it is sent. And
+images are accepted in user messages and tool results only.
 
 Inspect the merged result without starting a session:
 
@@ -255,8 +276,18 @@ export function apply(ctx: Context) {
 ```
 
 `ctx.minimaxAccount` exposes `signIn()`, `signOut()`, `resolveToken(url)`,
-`rejectToken(token)`, and `getState()`. State transitions publish
-`minimax-account/authenticated` and `minimax-account/signed-out`.
+`rejectToken(token)`, `getState()` and `currentState()`. State transitions
+publish `minimax-account/authenticated` and `minimax-account/signed-out`.
+
+**`currentState()` is the one that answers "who is signed in".** The service
+caches its state in memory and only reads the persisted grant when a token is
+actually needed, which happens on an inference turn — so `getState()` alone
+reports a restarted Host as signed out even when the credential is sitting on
+disk. That is not a theoretical gap: it is what made the settings page tell a
+signed-in operator to sign in again until they happened to send a message.
+`getState()` stays for the code that legitimately wants the cheap, possibly-stale
+answer; `currentState()` reads storage, caches what it found, and never
+refreshes — minting tokens is `resolveToken`'s job.
 
 ## Scope and risk
 
@@ -341,46 +372,58 @@ That matters most for `@deepseek-ai/schemastery`: this package composes schema
 objects it receives from `dsh-llm-deepseek`, and schemastery compares schemas by
 instance, so a second copy produces schemas the host's loader cannot recognise.
 
-**Git installs need no build authorization, and that is deliberate.** `lib/` is
-committed to this repository. A git install therefore arrives with its entry
-point already present, and pnpm has nothing to compile — so there is no
-`allowBuilds` entry to add and no code executing on the operator's machine at
-install time.
+**Git installs run no build and need no authorization.** `lib/` is committed to
+this repository and the manifest declares **no `prepare`**, so pnpm has nothing to
+prepare: it links the committed entry point and stops. There is no `allowBuilds`
+entry, no SHA to rewrite on every commit, and no code from this package executing
+on the operator's machine at install time.
 
-Two pnpm 11 behaviours make that choice necessary rather than merely tidy:
+The `prepare` script is the whole cause of the cost, and it is worth being precise
+about the mechanism, because two plausible-sounding claims about it are wrong:
 
-- `packageShouldBeBuilt()` returns `true` the moment a `prepare` script exists,
-  *before* it ever looks at whether the build output is present. A `prepare`-based
-  package therefore always trips the `allowBuilds` gate.
-- When pnpm does build a git dependency it runs only
-  `prepublish` / `prepack` / `publish`. **`prepare` is never executed.** So a
-  `prepare`-only package passes the gate and then builds nothing, and the failure
-  surfaces later as an unrelated-looking runtime error about a missing module.
+- pnpm decides a git-hosted package must be prepared **the moment a `prepare`
+  script exists**. It never inspects whether build output is already present, so
+  committing `lib/` does not exempt the package — the script is what decides.
+- pnpm 10.26 turned that into a hard stop. A git-hosted package that declares
+  `prepare` fails with `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` until the operator
+  adds a SHA-pinned `allowBuilds` key. Granting it does not make the install
+  cheap: pnpm clones the repository, runs a package-manager install inside it to
+  fetch every devDependency, and then runs the build.
 
-This package therefore uses `prepack` (which pnpm *does* run, and which
-`pnpm pack` and `npm publish` also run) and commits the result. After changing
-anything under `src/`, run `npm run build` and commit `lib/` with it.
+Measured on this package with the harness's own pnpm, the `prepare` path took
+**1m32s and installed 95 packages** to produce a handful of JavaScript files. The
+same package without `prepare` installs in seconds and adds one package.
 
-If you hit `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` anyway — most likely because
-you are installing a commit from before this change — the key pnpm wants is
-`name@<full tarball url>`, **not** the bare package name, and it must be quoted
-because it contains `@` and `:`:
+Which lifecycle hooks trigger that path is not obvious, so it was measured rather
+than assumed. A matrix over the six hooks, each installed as a git dependency:
+
+| Hook present | Git install |
+| --- | --- |
+| `prepare` | needs approval, builds |
+| `prepack` | installs, no build |
+| `prepublishOnly` | installs, no build |
+| `prepublish` | installs, no build |
+| no scripts | installs, no build |
+
+`prepare` is the only one that triggers it. The absolute-path and tarball forms
+were checked the same way and install without running anything either.
+
+`prepack` stays in the manifest anyway, because it is the one hook pnpm never
+runs for an installed package while `npm pack` and `npm publish` always do — so a
+shipped tarball carries a freshly built `lib/` and an install never pays for one.
+
+If you hit `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`, you are installing a commit
+from before this change. The key pnpm wants is `name@<full tarball url>`, **not**
+the bare package name, and it must be quoted because it contains `@` and `:`:
 
 ```yaml
 allowBuilds:
   '@audsiui/dsh-minimax-coding-plan@https://codeload.github.com/audsiui/-audsiui-dsh-minimax-coding-plan/tar.gz/<sha>': true
 ```
 
-That key embeds the commit hash, so it has to be rewritten on every update. It
-also authorizes **the package's code to run on your machine at install time,
-outside any agent sandbox** — grant it only for source you trust. A
-`pnpm pack` tarball sidesteps the question entirely, because the artifact
-already contains `lib/`:
-
-```sh
-npm run build && npm pack
-dsh plugin --profile demo add ./audsiui-dsh-minimax-coding-plan-0.1.0.tgz
-```
+That key embeds the commit hash, so it has to be rewritten on every update, and
+it authorizes **the package's code to run on your machine at install time,
+outside any agent sandbox**. Updating the package removes the need for it.
 
 ## Layering
 
@@ -399,15 +442,37 @@ third-party install will work.
 | --- | --- | --- |
 | types | `npm run typecheck` | the harness repository's strictness, against published `.d.ts` |
 | build | `npm run build` | the self-contained publish build, all host deps external |
+| artifacts | `npm run verify:artifacts` | the committed `src/generated/` and `lib/` are byte-identical to a fresh run |
 | live | `npm run smoke` | OAuth + credential store against the **live** account origin |
 | wiring | `node wiring.mjs` | `apply()` inside a real Cordis context with the real LLM runtime |
 | quota shape | `node quota-smoke.mjs` | the usage read against the **live** endpoint with an invalid grant |
 | header probe | `node quota-probe.mjs` | which credential header the service actually reads |
 
-**When you change `src/`, run `npm run build` and commit `lib/` in the same
-commit.** `lib/` is tracked on purpose (see the git-install note above), so a
-commit that changes the source without rebuilding leaves every git installer on
-the stale build with no error to tell them so.
+**When you change `src/`, run `npm run generate:typert && npm run build` and
+commit both committed trees in the same commit.** They are tracked on purpose
+(see the git-install note above), and neither is produced by the other, so a
+change that rebuilds one and not the other leaves the plugin shipping yesterday's
+JavaScript or a Remote codec that describes methods the code no longer has.
+`npm run verify:artifacts` is what catches that: it regenerates, rebuilds,
+compares both trees against the committed ones, lists every file that drifted,
+and puts the working copy back exactly as it found it. Wire it into CI and the
+failure moves from "a user noticed" to "the push failed".
+
+### The gates' seam
+
+`.` is the published interface, and it is deliberately small: the Cordis entry,
+the config schema, the account service, the Remote service, and the wire
+vocabulary they are described in. Not there, because a consumer never needs to
+know them: the credential encoders, the authenticated read, the two readers and
+the OAuth protocol client.
+
+Those are reachable through `./testing`, which exists because the gates are most
+valuable when they exercise the *built artifact* — and they do reach past the
+plugin's own entry point to test the readers and the credential encoding
+directly and hermetically. Publishing them under `.` to make that possible made
+the interface a list of implementation details, and contradicted this package's
+own source, which describes several of those modules as explicitly internal.
+`./testing` is not an API and is not stable across releases.
 
 **Reinstalling a git dependency requires restarting the host, not just the
 plugin.** Node caches an ES module per process, so re-running `dsh plugin add`

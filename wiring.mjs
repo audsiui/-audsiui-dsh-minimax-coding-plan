@@ -15,7 +15,14 @@ import { Context } from "@deepseek-ai/cordis";
 import LlmRuntime from "@deepseek-ai/dsh-llm";
 import AuthorizationService from "@deepseek-ai/dsh-authorization";
 import LocalCredentialProvider from "@deepseek-ai/dsh-credentials-local";
+// Two imports, two surfaces. `minimax` is the package's published interface: the
+// Cordis entry the loader sees, the config schema, the account service and the
+// Remote service. `testing` is the declared seam into the internals this gate
+// exercises directly — the credential encoders and the two readers — so it keeps
+// running against the built artifact without those symbols having to be published
+// under `.`.
 import * as minimax from "./lib/index.js";
+import * as testing from "./lib/types/testing.js";
 
 const dir = await mkdtemp(join(tmpdir(), "minimax-apply-"));
 const credentialsPath = join(dir, "credential.json");
@@ -99,9 +106,11 @@ check("account reads the grant from the credential seam",
 check("account is authenticated from the seam",
   account.getState().status === "authenticated", account.getState().status);
 check("opaque payload is rejected when it is not ours",
-  minimax.parseGrantPayload({ schemaVersion: 1, clientId: "someone-else" }) === undefined);
+  testing.parseStoredCredential({ schemaVersion: 1, clientId: "someone-else" }) === undefined);
 check("a payload missing the required scope is refused",
-  minimax.parseGrantPayload({ ...committed.payload, scopes: ["other"] }) === undefined);
+  testing.parseStoredCredential({ ...committed.payload, scopes: ["other"] }) === undefined);
+check("a payload with no region is refused",
+  testing.parseStoredCredential({ ...committed.payload, region: "" }) === undefined);
 await account.signOut();
 check("sign-out clears the seam record",
   (await ctx.credentials.readRecord(minimax.GRANT_KEY)) === undefined);
@@ -112,6 +121,54 @@ check("provider route registered",
   ctx.llm.listProviders().map(p => p.id).includes("minimax-coding-plan"));
 check("account service provided", account !== undefined);
 check("starts signed out", account?.getState()?.status === "signed-out");
+
+// --- A grant already on disk that this process has not read ------------------
+//
+// The state is cached in memory, and nothing read the persisted grant until a
+// token was actually needed — which happened on an inference turn. A Host
+// restarted with a perfectly good credential therefore told every surface it was
+// signed out, and told it so until the operator happened to send a message. The
+// account now answers "who is signed in" from storage itself.
+{
+  const restoreDir = await mkdtemp(join(tmpdir(), "minimax-restore-"));
+  const restorePath = join(restoreDir, "credential.json");
+  await testing.writeCredential(restorePath, {
+    accessToken: "restored-token",
+    refreshToken: "restored-refresh",
+    expiresAtMs: Date.now() + 3_600_000,
+    scopes: ["agent.default"],
+  }, "cn");
+  const restored = new minimax.MinimaxAccount(new Context(), {
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    credentialsPath: restorePath,
+    openBrowser: false,
+  });
+  check("a fresh account reports signed out before it has read storage",
+    restored.getState().status === "signed-out", restored.getState().status);
+  const restoredState = await restored.currentState();
+  check("currentState reports the grant that was already on disk",
+    restoredState.status === "authenticated", restoredState.status);
+  check("currentState caches what it resolved, for getState to read",
+    restored.getState().status === "authenticated", restored.getState().status);
+
+  // And a grant issued for another region is not this installation's, even
+  // though the file parses: region matching was never part of validation.
+  const foreignPath = join(restoreDir, "foreign.json");
+  await testing.writeCredential(foreignPath, {
+    accessToken: "en-token",
+    expiresAtMs: Date.now() + 3_600_000,
+    scopes: ["agent.default"],
+  }, "en");
+  const foreign = new minimax.MinimaxAccount(new Context(), {
+    endpoints: minimax.REGION_ENDPOINTS.cn,
+    region: "cn",
+    credentialsPath: foreignPath,
+    openBrowser: false,
+  });
+  check("a grant for another region still reads as signed out",
+    (await foreign.currentState()).status === "signed-out", (await foreign.currentState()).status);
+}
 
 const OK = "https://agent.minimax.cn/mavis/api/v1/llm";
 const lookalikes = [
@@ -127,7 +184,7 @@ for (const [label, url] of lookalikes) {
   check(`refused before sign-in: ${label}`, await account.resolveToken(url) === undefined);
 }
 
-await minimax.writeCredential(credentialsPath, {
+await testing.writeCredential(credentialsPath, {
   accessToken: "test-access-token",
   refreshToken: "test-refresh-token",
   expiresAtMs: Date.now() + 3_600_000,
@@ -148,7 +205,7 @@ for (const [label, url] of lookalikes) {
 }
 
 // A late 401 for a token that is no longer the stored one must not sign out.
-await minimax.writeCredential(credentialsPath, {
+await testing.writeCredential(credentialsPath, {
   accessToken: "newer-token", refreshToken: "newer-refresh",
   expiresAtMs: Date.now() + 3_600_000, scopes: ["agent.default"],
   accountId: "acct-test", subject: "sub-test",
@@ -237,7 +294,7 @@ const REAL_SHAPE = {
   base_resp: { status_code: 0, status_msg: "success" },
 };
 
-const parsed = await minimax.fetchQuota(quotaFor(REAL_SHAPE));
+const parsed = await testing.fetchQuota(quotaFor(REAL_SHAPE));
 const generalWeekly = parsed.find(w => w.model === "general" && w.window === "weekly");
 const generalInterval = parsed.find(w => w.model === "general" && w.window === "interval");
 const videoWeekly = parsed.find(w => w.model === "video" && w.window === "weekly");
@@ -280,7 +337,7 @@ check("a percentage-metered window says so",
 check("a count-metered window says so", videoWeekly.meter === "count", videoWeekly.meter);
 // A zero total is not a quota: the service sends it on a window it does not
 // count, and treating it as one would draw an empty bar labelled `0 / 0`.
-const zeroCount = await minimax.fetchQuota(quotaFor({
+const zeroCount = await testing.fetchQuota(quotaFor({
   model_remains: [{
     model_name: "video",
     current_weekly_total_count: 0, current_weekly_used_count: 0, current_weekly_remains_count: 0,
@@ -297,7 +354,7 @@ check("a zero count is not treated as a request quota",
 // count implied it — a different field answering a different question — and
 // then restored when the client was read for the real rule. This pins it.
 check("a status of 1 is not unlimited", generalWeekly.unlimited === false && videoWeekly.unlimited === false);
-const unmetered = await minimax.fetchQuota(quotaFor({
+const unmetered = await testing.fetchQuota(quotaFor({
   model_remains: [{
     model_name: "general",
     current_interval_total_percent: "100%",
@@ -315,7 +372,7 @@ check("a status of 3 is unlimited, on the window that reported it",
   JSON.stringify(unmetered.map(w => [w.window, w.unlimited])));
 // The statuses are per window: an interval at 3 and a weekly at 1 must not
 // collapse into one flag for the model.
-const mixed = await minimax.fetchQuota(quotaFor({
+const mixed = await testing.fetchQuota(quotaFor({
   model_remains: [{
     model_name: "general",
     current_interval_total_percent: "100%",
@@ -334,7 +391,7 @@ check("unlimited is per window, not per model",
 
 // A seconds-valued reset is still lifted, since the service is not consistent
 // about the unit and the older fixture proved the seconds form exists.
-const seconds = await minimax.fetchQuota(quotaFor({
+const seconds = await testing.fetchQuota(quotaFor({
   model_remains: [{ model_name: "general", weekly_end_time: 1_700_600_000 }],
   base_resp: { status_code: 0 },
 }));
@@ -345,7 +402,7 @@ check("a seconds-valued reset is lifted to millis",
 // An entry that carries none of a window's fields is genuinely absent. This is
 // the only thing that makes a window "unmetered": the counts, which are -1 on
 // the `general` entry above while its allowance is live at 6% / 150%.
-const bare = await minimax.fetchQuota(quotaFor({
+const bare = await testing.fetchQuota(quotaFor({
   model_remains: [{ model_name: "general", current_weekly_total_count: -1, current_weekly_used_count: -1 }],
   base_resp: { status_code: 0 },
 }));
@@ -353,7 +410,7 @@ check("an entry with no percentage fields is reported absent",
   bare.every(w => w.present === false), JSON.stringify(bare.map(w => [w.window, w.present])));
 
 // An unrecognised model must still produce windows rather than being dropped.
-const unnamed = await minimax.fetchQuota(quotaFor({
+const unnamed = await testing.fetchQuota(quotaFor({
   model_remains: [{ current_weekly_total_percent: "100%", current_weekly_used_percent: "5%" }],
   base_resp: { status_code: 0 },
 }));
@@ -366,19 +423,19 @@ check("an entry with no model_name is still reported",
 // header, an empty header, and two garbage bearers. An earlier version also
 // treated 1004 as the "no credential" code; there is no such distinction.
 let staleError;
-try { await minimax.fetchQuota(quotaFor({ base_resp: { status_code: 1016, status_msg: "invalid api key" } })); }
+try { await testing.fetchQuota(quotaFor({ base_resp: { status_code: 1016, status_msg: "invalid api key" } })); }
 catch (e) { staleError = e; }
 check("a rejected grant raises QuotaAuthError",
-  staleError instanceof minimax.QuotaAuthError, `${staleError?.name} ${staleError?.statusCode ?? ""}`);
+  staleError instanceof testing.QuotaAuthError, `${staleError?.name} ${staleError?.statusCode ?? ""}`);
 check("the message carries the service's own code and wording",
   staleError?.message.includes("1016") && staleError.message.includes("invalid api key"),
   staleError?.message);
 
 let bizError;
-try { await minimax.fetchQuota(quotaFor({ base_resp: { status_code: 1003, status_msg: "group-not-member" } }, 401)); }
+try { await testing.fetchQuota(quotaFor({ base_resp: { status_code: 1003, status_msg: "group-not-member" } }, 401)); }
 catch (e) { bizError = e; }
 check("a non-auth business code is not mistaken for an expired grant",
-  !(bizError instanceof minimax.QuotaAuthError) && bizError instanceof minimax.QuotaNetworkError, bizError?.name);
+  !(bizError instanceof testing.QuotaAuthError) && bizError instanceof testing.QuotaNetworkError, bizError?.name);
 check("an unrecognised code still reports what the server said",
   bizError?.message.includes("1003") && bizError.message.includes("group-not-member"), bizError?.message);
 
@@ -388,26 +445,26 @@ check("an unrecognised code still reports what the server said",
 // `1003` is a statement about membership, not about the credential, and the
 // surface offers a retry for one and a re-sign-in for the other.
 check("a 401 carrying a business code is judged by the business code",
-  !(bizError instanceof minimax.QuotaAuthError)
+  !(bizError instanceof testing.QuotaAuthError)
   && bizError?.message.includes("group-not-member"),
   bizError?.message);
 let bare401;
-try { await minimax.fetchQuota(quotaFor({}, 401)); } catch (e) { bare401 = e; }
+try { await testing.fetchQuota(quotaFor({}, 401)); } catch (e) { bare401 = e; }
 check("a 401 with no business code is still an expired grant",
-  bare401 instanceof minimax.QuotaAuthError, `${bare401?.name}`);
+  bare401 instanceof testing.QuotaAuthError, `${bare401?.name}`);
 let html401;
 try {
-  await minimax.fetchQuota({ ...quotaFor(null), fetchImpl: async () => new Response("<html>login</html>", { status: 401 }) });
+  await testing.fetchQuota({ ...quotaFor(null), fetchImpl: async () => new Response("<html>login</html>", { status: 401 }) });
 } catch (e) { html401 = e; }
 check("a 401 behind a login redirect is an expired grant, not a transport fault",
-  html401 instanceof minimax.QuotaAuthError, `${html401?.name}: ${html401?.message}`);
+  html401 instanceof testing.QuotaAuthError, `${html401?.name}: ${html401?.message}`);
 
 let nonJson;
 try {
-  await minimax.fetchQuota({ ...quotaFor(null), fetchImpl: async () => new Response("<html>login</html>", { status: 200 }) });
+  await testing.fetchQuota({ ...quotaFor(null), fetchImpl: async () => new Response("<html>login</html>", { status: 200 }) });
 } catch (e) { nonJson = e; }
 check("an HTML body is a network error, not a silent empty quota",
-  nonJson instanceof minimax.QuotaNetworkError, nonJson?.message);
+  nonJson instanceof testing.QuotaNetworkError, nonJson?.message);
 
 // The grant travels as `Authorization: Bearer`. This was wrong once: an earlier
 // version sent a bare `token` header, on the strength of a note claiming the
@@ -417,7 +474,7 @@ check("an HTML body is a network error, not a silent empty quota",
 // regression cannot come back quietly.
 let seenAuthorization;
 let seenBareToken;
-await minimax.fetchQuota({
+await testing.fetchQuota({
   ...quotaFor({ base_resp: { status_code: 0 } }),
   fetchImpl: async (_url, init) => {
     const headers = new Headers(init.headers);
@@ -494,7 +551,7 @@ const planFor = (routes, seen) => ({
 });
 
 const planSeen = [];
-const plan = await minimax.fetchPlan(planFor(
+const plan = await testing.fetchPlan(planFor(
   [["/v1/api/user/info", USER_INFO], ["/commerce/get_membership_info", MEMBERSHIP]],
   planSeen,
 ));
@@ -543,7 +600,7 @@ check("no credit balance is reported, because the two fields disagree",
 //     *usage* read's `authExpired`, so a plan failure has no distinct action
 //     behind it; a throw would only add a branch the caller must know about.
 
-const accountDown = await minimax.fetchPlan(planFor([
+const accountDown = await testing.fetchPlan(planFor([
   ["/v1/api/user/info", () => jsonResponse({ statusInfo: { code: 2, message: "请求异常，请检查请求参数" } }, 400)],
   ["/commerce/get_membership_info", MEMBERSHIP],
 ]));
@@ -560,7 +617,7 @@ check("a non-zero code inside the account envelope reaches the message",
   && accountDown.error.includes("2") && accountDown.error.includes("请求参数"),
   accountDown.error);
 
-const planDown = await minimax.fetchPlan(planFor([
+const planDown = await testing.fetchPlan(planFor([
   ["/v1/api/user/info", USER_INFO],
   ["/commerce/get_membership_info", () => jsonResponse({ base_resp: { status_code: 30700, status_msg: "region-restriction" } })],
 ]));
@@ -574,7 +631,7 @@ check("a non-zero base_resp on the plan read reaches the message",
 
 let planBothDown;
 try {
-  planBothDown = await minimax.fetchPlan(planFor([
+  planBothDown = await testing.fetchPlan(planFor([
     ["/v1/api/user/info", () => jsonResponse({ statusInfo: { code: 2 } }, 400)],
     ["/commerce/get_membership_info", () => jsonResponse({ base_resp: { status_code: 30700 } })],
   ]));
@@ -584,7 +641,7 @@ check("two failures report, rather than throw, because they never throw",
   && planBothDown.tier === null && planBothDown.accountName === null,
   planBothDown instanceof Error ? `THREW ${planBothDown.name}` : planBothDown.error);
 check("a rejected grant is reported in the record too, never thrown",
-  (await minimax.fetchPlan({
+  (await testing.fetchPlan({
     origin: minimax.REGION_ENDPOINTS.cn.agentOrigin,
     token: "plan-token",
     fetchImpl: async () => jsonResponse({}, 401),
@@ -594,7 +651,7 @@ check("a rejected grant is reported in the record too, never thrown",
 // endpoint across ten combinations: only `Authorization: Bearer` passes, and the
 // request signatures MiniMax's renderer computes are not required.
 let planAuthHeader;
-await minimax.fetchPlan({
+await testing.fetchPlan({
   origin: minimax.REGION_ENDPOINTS.cn.agentOrigin,
   token: "plan-token",
   fetchImpl: async (_url, init) => {
@@ -612,6 +669,10 @@ check("the grant is sent as Authorization: Bearer on the agent origin too",
 // to render state and drive the two buttons with no path by which a token
 // reaches the browser.
 let remoteState = { status: "signed-out" };
+// What the persisted credential holds, kept apart from the in-process reading on
+// purpose: reproducing the split is the whole point, because it is the split
+// that made a restarted Host report a signed-in account as signed out.
+let remoteStoredState = { status: "signed-out" };
 let remoteToken;
 let remoteSignOuts = 0;
 let remoteSignIns = 0;
@@ -625,6 +686,7 @@ let remoteSignIns = 0;
 let remoteTokenPolls = 0;
 const remoteAccount = {
   getState: () => remoteState,
+  currentState: async () => { remoteState = remoteStoredState; return remoteState },
   signIn: () => {
     remoteSignIns++;
     remoteState = { status: "authorizing", userCode: "ABCD-1234", verificationUri: "https://example.test/verify", verificationUriComplete: "https://example.test/verify?code=ABCD-1234", expiresInSec: 300 };
@@ -638,7 +700,11 @@ const remoteAccount = {
     remoteState = { status: "authorizing", userCode: "ABCD-1234", verificationUri: "https://example.test/verify", verificationUriComplete: "https://example.test/verify?code=ABCD-1234", expiresInSec: 300 };
     return remoteState;
   },
-  signOut: () => { remoteSignOuts++; remoteState = { status: "signed-out" }; return Promise.resolve(remoteState); },
+  signOut: () => {
+    remoteSignOuts++;
+    remoteState = remoteStoredState = { status: "signed-out" };
+    return Promise.resolve(remoteState);
+  },
   resolveToken: (url) => (url === minimax.REGION_ENDPOINTS.cn.quotaOrigin && remoteToken !== undefined
     ? Promise.resolve(remoteToken)
     : Promise.resolve(undefined)),
@@ -672,7 +738,7 @@ check("Remote service binds its namespace", remoteService.typertRemote?.namespac
 check("every @Remote method is reachable on the instance",
   ["state", "signIn", "signOut", "quota", "plan"].every(m => typeof remoteService[m] === "function"));
 
-const wireOut = remoteService.state();
+const wireOut = await remoteService.state();
 check("signed-out state is the wire projection", wireOut.status === "signed-out" && wireOut.accountId === null);
 check("the wire projection never carries a token", !JSON.stringify(wireOut).includes("accessToken"));
 
@@ -681,6 +747,23 @@ check("the wire projection never carries a token", !JSON.stringify(wireOut).incl
 // holding the call open for the whole approval conversation would be wrong; but
 // returning the pre-attempt `signed-out` is wrong too, because the surface's
 // poll is gated on observing `authorizing`.
+// The regression this whole split exists for. A Host that restarts keeps the
+// credential on disk but has read nothing yet this process, so its in-process
+// state is still `signed-out`. Before `currentState()` existed, `state()` read
+// that cached value and the settings page told a signed-in operator to sign in
+// again — until an inference turn happened to call `resolveToken` and flip it.
+remoteState = { status: "signed-out" };
+remoteStoredState = { status: "authenticated", accountId: "acct-restored", expiresAtMs: 1700003600000 };
+const restored = await remoteService.state();
+check("a grant restored from storage is reported without an inference turn",
+  restored.status === "authenticated" && restored.accountId === "acct-restored",
+  `${restored.status} / ${restored.accountId}`);
+check("the restored reading also populates the cached state",
+  remoteAccount.getState().status === "authenticated", remoteAccount.getState().status);
+
+// Back to a signed-out account for the button flows below.
+remoteState = remoteStoredState = { status: "signed-out" };
+
 const authorizing = await remoteService.signIn();
 check("signIn resolves on the authorizing transition, not on kickoff", authorizing.status === "authorizing", authorizing.status);
 check("the projection carries the code and the complete page",
@@ -689,9 +772,9 @@ check("signIn does not wait for the approval", remoteAccount.tokenPolls() === 0,
 await new Promise(resolve => setTimeout(resolve, 0));
 check("signIn started exactly one attempt", remoteSignIns === 1, String(remoteSignIns));
 
-remoteState = { status: "authenticated", accountId: "acct-remote", expiresAtMs: 1700003600000 };
+remoteState = remoteStoredState = { status: "authenticated", accountId: "acct-remote", expiresAtMs: 1700003600000 };
 remoteToken = "remote-grant";
-const authed = remoteService.state();
+const authed = await remoteService.state();
 check("authenticated state carries the account id", authed.accountId === "acct-remote", authed.accountId);
 check("authenticated state drops the device code", authed.userCode === null);
 
@@ -757,8 +840,15 @@ check("an unreachable plan service is reported in the record, not thrown",
 // Short-circuited while signed out, like the usage read: asking for a plan with
 // no grant would only produce a message the surface already knows.
 const signedOutCtx = new Context();
+const signedOutState = { status: "signed-out" };
 const signedOutService = new minimax.MinimaxRemoteService(signedOutCtx, {
-  account: { getState: () => ({ status: "signed-out" }), resolveToken: () => Promise.resolve(undefined) },
+  account: {
+    getState: () => signedOutState,
+    currentState: () => Promise.resolve(signedOutState),
+    resolveToken: () => Promise.resolve(undefined),
+    beginSignIn: () => Promise.reject(new Error("not used")),
+    signOut: () => Promise.resolve(signedOutState),
+  },
   endpoints: minimax.REGION_ENDPOINTS.cn,
   region: "cn",
   fetchImpl: () => { throw new Error("must not be called without a grant"); },
@@ -860,7 +950,7 @@ const bareGrant = {
   accessToken: "at-2", refreshToken: undefined, expiresAtMs: 1,
   scopes: ["agent.default"], accountId: undefined, subject: undefined,
 };
-const payload = minimax.grantPayload(bareGrant, "cn");
+const payload = testing.toStoredCredential(bareGrant, "cn");
 check("the credential payload holds no undefined value", undefinedFree(payload),
   Object.entries(payload).filter(([, m]) => m === undefined).map(([k]) => k).join(", "));
 check("an absent field is omitted, not written as undefined",
@@ -868,9 +958,9 @@ check("an absent field is omitted, not written as undefined",
 check("the payload survives a JSON round trip unchanged",
   JSON.stringify(JSON.parse(JSON.stringify(payload))) === JSON.stringify(payload));
 check("the payload reads back as a usable grant",
-  minimax.parseGrantPayload(JSON.parse(JSON.stringify(payload)))?.accessToken === "at-2");
+  testing.parseStoredCredential(JSON.parse(JSON.stringify(payload)))?.accessToken === "at-2");
 const fullGrant = { ...bareGrant, refreshToken: "rt", accountId: "acct-1", subject: "sub-1" };
-const fullPayload = minimax.grantPayload(fullGrant, "cn");
+const fullPayload = testing.toStoredCredential(fullGrant, "cn");
 check("a fully populated grant keeps every field",
   fullPayload.refreshToken === "rt" && fullPayload.accountId === "acct-1" && fullPayload.subject === "sub-1");
 
